@@ -19,9 +19,12 @@
 
 ```mermaid
 graph LR
-    A[Source: gs://raw-bucket/trade.csv] :::nodeStyle -->|Read| B[Process: Dataflow ETL] :::nodeStyle
-    B -->|Write| C[Destination: BigQuery.risk_exposure] :::nodeStyle
-    classDef nodeStyle fill:#f5f5f5,stroke:#333,stroke-width:1px;
+    A[Source: gs://raw-bucket/trade.csv] -->|Read| B[Process: Dataflow ETL]
+    B -->|Write| C[Destination: BigQuery.risk_exposure]
+    
+    style A fill:#f5f5f5,stroke:#333,stroke-width:1px
+    style B fill:#f5f5f5,stroke:#333,stroke-width:1px
+    style C fill:#f5f5f5,stroke:#333,stroke-width:1px
 ```
 
 ### 1.1 技术层血缘（容错配方） vs. 合规层血缘（审计铁证）
