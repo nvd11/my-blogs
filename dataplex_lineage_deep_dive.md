@@ -80,6 +80,17 @@ Dataflow 本身并不解析该 SQL，而是将其作为一个 Query Job 提交�
 
 在这些场景下，开发团队必须显式调用 **Dataplex Lineage API**，手动进行代码打桩上报，才能将血缘链条接上。
 
+### 3.4 终极拷问：上报的 Lineage 血缘信息本身存放到了哪里？
+这是系统设计和面试中极易混淆的概念：**“自动上报上来的 Lineage 拓扑和元数据（节点与边），实际上存储在 GCP 的什么地方？是存在 BigQuery 里面吗？”**
+
+*   **答案是：绝对不在 BigQuery 中！**
+    *   **原因 1（定位不同）**：BigQuery 是业务数据平面（Data Plane），是用来存储用户的交易流水、清洗后的合规报表等真实业务数据的；而 Lineage 拓扑（节点与有向边）属于系统级关系图元数据（Control Plane Metadata），在底层物理架构上是完全隔离的。
+    *   **原因 2（格式不兼容）**：Lineage 关系信息在数学和图论本质上是 **“图结构数据（Graph Data）”**（记录的是 A 连向 B，B 连向 C）。如果强行用 BigQuery 这种列式关系型数据库去存储和查询，每次查询血缘都要跑一次极其昂贵且缓慢的 SQL 多表关联（Self-join），这在性能和成本上都是不可接受的。
+*   **真实的存储底座：GCP 内部托管的“私有知识图谱（Private Knowledge Graph）”**
+    在谷歌云底层，所有上报上来的 Lineage 信息都会被写入并持久化在一个**完全对用户隐蔽的、高可用的“中央系统级元数据库（Central System-level Graph Metadata Store）”**中。
+    在谷歌云的官方体系中，这一底座被定义为 **GCP 内部私有的 Knowledge Graph（知识图谱）**，它底层采用了 **属性图数据模型（Property Graph Data Model）**。
+    当用户通过 Dataplex/Data Catalog 页面检索、或者第三方系统（如 Collibra）通过 REST API 调取血缘时，底层引擎会直接去这个私有的知识图谱数据库中运行极其快速的 **“图遍历（Graph Traversal）”** 算法，从而在毫秒级内将一整条长达数十步的血缘红线渲染给用户。
+
 ---
 
 ## 4. 跨多数据湖的 CQRS 架构设计（Read-Write Decoupling）
