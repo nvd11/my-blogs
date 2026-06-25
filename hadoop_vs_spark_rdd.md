@@ -23,20 +23,18 @@ Hadoop MapReduce 是分布式计算的开山鼻祖，其核心思想是 **"Share
 ```mermaid
 graph TD
     subgraph Hadoop MapReduce JVM & Disk Execution
-        A[HDFS Data Block] -->|Read| B[Map Task JVM 1]
-        C[HDFS Data Block] -->|Read| D[Map Task JVM 2]
+        A[HDFS Data Block] -->|Read| B[Map Task JVM 1]:::shortlife
+        C[HDFS Data Block] -->|Read| D[Map Task JVM 2]:::shortlife
         
         B -->|Spill & Sort| E[Local Disk 1]
         D -->|Spill & Sort| F[Local Disk 2]
         
         classDef shortlife fill:#f96,stroke:#333,stroke-width:2px;
-        class B,D shortlife; %% Short-lived JVMs
         
-        E -->|Shuffle Network| G[Reduce Task JVM]
+        E -->|Shuffle Network| G[Reduce Task JVM]:::shortlife
         F -->|Shuffle Network| G
         
         G -->|Output Write| H[HDFS 3 Replicas]
-        class G shortlife;
     end
 ```
 
@@ -61,11 +59,10 @@ Spark 站在了内存硬件普及（2012 年后，GB 级内存成本暴降）的
 ```mermaid
 graph TD
     subgraph Spark Long-lived Executor & RAM Execution
-        A[HDFS Data Block] -->|Fetch Partition| B[Executor JVM Worker 1]
-        C[HDFS Data Block] -->|Fetch Partition| D[Executor JVM Worker 2]
+        A[HDFS Data Block] -->|Fetch Partition| B[Executor JVM Worker 1]:::longlife
+        C[HDFS Data Block] -->|Fetch Partition| D[Executor JVM Worker 2]:::longlife
         
         classDef longlife fill:#6cf,stroke:#333,stroke-width:2px;
-        class B,D longlife; %% Long-lived JVMs
         
         subgraph Pipeline Streaming in RAM
             B -->|map| B1[Partition 1 RAM]
