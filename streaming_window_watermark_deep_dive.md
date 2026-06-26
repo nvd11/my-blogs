@@ -6,9 +6,9 @@
 
 ---
 
-## 1. RCDP 实时流式计算架构（推模式的物理图谱）
+## 1. 企业合规数据平台 实时流式计算架构（推模式的物理图谱）
 
-在监管合规数据平台（RCDP）中，我们设计了**“以事件驱动、松耦合”**为原则的流式数据链路。
+在监管合规数据平台（企业合规数据平台）中，我们设计了**“以事件驱动、松耦合”**为原则的流式数据链路。
 
 ```
   [ Upstream App / Rapid2 ] (持续数据流)
@@ -37,7 +37,7 @@
 我们必须首先从业务的**“起算时机”**这一源头，划分出两条完全不同的技术分流：
 
 ### 2.1 场景 A：无状态流处理 / 单条数据摄取（Row-by-Row Ingestion）
-*   **业务画像**：来一笔交易 ➡️ 做个格式 Mapping ➡️ 直接写进 BigQuery（例如 RCDP 绝大多数的报表、供给和传统对账场景）。
+*   **业务画像**：来一笔交易 ➡️ 做个格式 Mapping ➡️ 直接写进 BigQuery（例如 企业合规数据平台 绝大多数的报表、供给和传统对账场景）。
 *   **物理本质**：数据像流水过河，过水即干。Dataflow Worker 的 JVM 内存中不需要保留任何数据上下文，也不需要对多条数据进行拼表或累加。
 *   **架构权衡**：在这种场景下，**完全不需要 Window，也完全不需要 Watermark！** 
     *   **拉模式/按需查询的降维打击**：下游报表（Reporting）在查看数据时，才按需发起一次 BQ 聚合查询。因为查询频次极低（如每天几次），BigQuery 的列存扫描开销极低、且开发简单，这才是最优雅、最省钱的设计。
@@ -153,7 +153,7 @@ $$\text{Global Watermark} = \min(\text{Local Watermark}_{\text{Partition}_1}, \t
 
 ### 7.1 Apache Beam (Java) 生产级流式代码
 ```java
-package com.hsbc.rcdp.streaming;
+package com.enterprise.dataplatform.streaming;
 
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubIO;
@@ -176,7 +176,7 @@ public class ComplianceStreamingPipeline {
         // 1. 从 Pub/Sub 摄取数据 ── 指定消息属性中的 "timestamp" 作为全局 Event Time (水位线推进依据)
         PCollection<PubsubMessage> rawMessages = pipeline.apply("ReadFromPubSub",
             PubsubIO.readMessagesWithAttributes()
-                .fromTopic("projects/hsbc-works/topics/compliance-alerts")
+                .fromTopic("projects/enterprise-data-platform/topics/transaction-events")
                 .withTimestampAttribute("timestamp") // 🌟 核心：绑定该时间戳字段控制 Watermark 推进
         );
 
