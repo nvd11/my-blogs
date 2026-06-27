@@ -107,3 +107,28 @@ sequenceDiagram
 
 ![Multi-Cloud Architecture](images/kong-multi-cloud-architecture.png)
 
+
+
+## 4. 极客解耦：CI 与 CD 仓库的物理分离机制
+
+在传统的单体仓库中，业务代码和 Kubernetes 图纸往往混杂在一起。这不仅会导致权限管理困难（开发人员可能无意中修改了生产环境的路由规则），还会引发“死亡循环”——图纸的修改触发了不必要的代码构建。
+
+为此，我们将架构严格物理拆分为 CI 和 CD 两个独立的仓库。
+
+### 4.1 CI 仓库的职责 (`kong-gitops-experiment`)
+CI 仓库是纯粹的应用代码大本营。在我们的实验中，这里不仅存放了 Java Quarkus 服务，还存放了 Python FastAPI 服务，是一个典型的 Monorepo。
+
+**核心设计**：
+- **精准触发打包**：利用 GitHub Actions 的 `paths` 过滤器，我们将单体流水线拆分成了 `quarkus-ci.yml` 和 `fastapi-ci.yml`。只有当 `apps/fastapi-svc/**` 目录下的代码发生变更时，才会触发 FastAPI 服务的打包流程，极大地节省了算力和时间。
+- **标准化交付物**：CI 的最终产物是一个标准的 OCI 镜像，并被推送到公共的 GitHub Container Registry (GHCR)。
+
+### 4.2 跨库通信机制：从 CI 呼叫 CD (repository_dispatch)
+当 CI 完成打包并推送镜像后，它必须通知 CD 仓库：“我有新版本了，请更新图纸！” 
+由于跨越了仓库物理边界，GitHub Actions 默认注入的 `${{ secrets.GITHUB_TOKEN }}` 权限不够，因为它被严格圈禁在当前仓库内。
+
+**破局方案**：
+1. **注入 PAT**：生成一个带有 `repo` 权限的 Personal Access Token (PAT)，并以 `CD_GIT_PAT` 的名字存入 CI 仓库的 Secrets 中。
+2. **发射 Webhook**：在 CI 流水线的最后一步，使用该 PAT 调用 GitHub API，发送 `repository_dispatch` 类型的 Webhook 信号。
+3. **传递新 Tag**：在 Webhook 的 payload 中，携带新鲜出炉的 Git Commit Hash 作为参数，传递给远端的 CD 仓库。
+
+这种机制彻底解耦了代码的“构建”与“部署”生命周期。
