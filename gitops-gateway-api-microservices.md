@@ -101,3 +101,5 @@ sequenceDiagram
 
 > **架构图文件位置**: `drawio/kong-multi-cloud-architecture.drawio`
 
+![Multi-Cloud Architecture](images/kong-multi-cloud-architecture.png)
+
