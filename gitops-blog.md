@@ -127,16 +127,12 @@ jobs:
 **现象**：最初在 CI 脚本中调用跨仓库 API 时，系统报 `Input required and not supplied: token` 或 403 Forbidden。
 **破局**：GitHub Actions 默认注入的 `${{ secrets.GITHUB_TOKEN }}` 权限被严格圈禁在“当前运行的仓库”内。为了调用 `my-argocd-manifests` 的 Dispatch API，必须生成一个带有 `repo` 权限的个人访问令牌 (PAT)，并以 `CD_GIT_PAT` 的名字存入业务仓库的 Secrets 中。
 
-### 3.2 自动化脚本中的 sudo 提权封锁
-**现象**：在通过 SSH 自动化管控节点并尝试静默输入密码提权时，被底层安全框架直接拦截，判定为风险。
-**破局**：在真正的自动化运维（GitOps/Ansible）中，绝不应在管道中明文传递密码。规范的做法是为执行自动化任务的账号（如 `gateman`）在 `/etc/sudoers` 中配置 `NOPASSWD`，彻底打通系统级管控通道。
-
-### 3.3 Kong KIC 引擎与 Gateway API 的“翻译崩溃”
+### 3.2 Kong KIC 引擎与 Gateway API 的“翻译崩溃”
 **现象**：为了在网关层剥离路径，我们在 Gateway API 的 `HTTPRoute` 中使用了 `URLRewrite` 过滤器，结果 Kong 报错 `KongConfigurationTranslationFailed`。
 **破局**：经过排查，开源版 Kong (KIC) 默认使用的是 `Traditional Router`（传统路由引擎），它根本无法解析 K8s Gateway API 中高级的正则路径重写语法。强行开启未完全成熟的 `Expression Router` 风险极高。
 最终我们选择退回最稳定的注解方式 `konghq.com/strip-path: "true"`，但这又引入了微服务后端“路径迷失”的新问题。
 
-### 3.4 ArgoCD 部署降级 (Degraded) 与探针改造
+### 3.3 ArgoCD 部署降级 (Degraded) 与探针改造
 **现象**：为了解决网关路径剥离导致的微服务内部上下文混乱，我们在 Quarkus 中配置了 `quarkus.http.root-path=/svc1`。结果 ArgoCD 部署后状态变为 `Degraded`，旧 Pod 迟迟不肯下线。
 **破局**：配置全局 Context 后，原本的健康检查探针 `/svc1` 返回了 404，导致 K8s 判定新容器启动失败。
 为了保持 CD 图纸的通用性（不把健康探针硬编码绑定到特定的业务路径 `/svc1/hello` 上），我们在 Quarkus 代码中设计了一个专用的根路径探针接口，完美迎合 K8s 的检查机制：
@@ -160,10 +156,6 @@ public class GreetingResource {
     }
 }
 ```
-
-### 3.5 GitHub Actions 的底层实现哲学：为何是 Node.js？
-在执行 CI 时，即使是纯 Java/Maven 构建环境，日志中也会频繁抛出 `Node 20 is being deprecated` 的警告。
-**溯源**：GitHub Actions 的底层 Runner 环境和绝大部分插件生态（包括官方的 checkout、setup-java，以及我们用的 repository-dispatch）全部基于 JavaScript/TypeScript 编写。相比于需要考虑跨平台编译（交叉编译各架构二进制文件）的 Go 语言，或者启动极慢的 Java，Node.js 配合预装的 V8 引擎提供了极致的冷启动速度和一次编写、全平台（Linux/Mac/Win 及 ARM/x86）运行的沙盒能力。理解这一点，对于未来自研企业内部的 Action 插件至关重要。
 
 ## 四、 结语
 
