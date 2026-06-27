@@ -171,10 +171,35 @@ concurrency:
 在网关路由层面，我们选择了 Kubernetes 新一代标准的 Gateway API (`GatewayClass`, `Gateway`, `HTTPRoute`)，取代了历史包袱沉重的 `Ingress`。这让我们拥有了更强悍的 HTTP 报文匹配和改写能力，同时也将网关拥有者与业务开发者的职责清晰划界。
 
 ### 6.1 Quarkus 服务的标准路由 (`/svc1`)
-对于基于 Java Quarkus 构建的常规微服务，它通常拥有良好的框架内聚性。我们只需编写一个简单的 `HTTPRoute` 规则，将前缀为 `/svc1` 的请求无缝路由至对应的 K8s Service 即可。流量从 Kong 进来，到达服务，一切顺理成章。
+对于基于 Java Quarkus 构建的常规微服务，它通常拥有良好的框架内聚性。我们只需在 CD 仓库的 ArgoCD Application 图纸中，利用 Helm 传参，极简声明路由规则即可。流量从 Kong 进来，到达服务，一切顺理成章。
+
+**配置位置**：[`argocd-apps/quarkus-svc-app.yaml`](https://github.com/nvd11/my-argocd-manifests/blob/main/argocd-apps/quarkus-svc-app.yaml)
+**配置内容片段**：
+```yaml
+    helm:
+      values: |
+        # ... 基础配置省略 ...
+        route:
+          enabled: true
+          parentGateway: kong-main-gateway # 认领基础设施大门
+          path: /svc1
+```
+ArgoCD 结合我们自研的 Helm 模板，会自动将这段极简配置展开为标准的 Gateway API `HTTPRoute` 资源。
 
 ### 6.2 FastAPI 服务的路由挑战与破局 (`/svc2`)
 但在接入基于 Python FastAPI 构建的第二个微服务（`/svc2`）时，我们遭遇了架构挑战。
+
+**配置位置**：[`argocd-apps/fastapi-svc-app.yaml`](https://github.com/nvd11/my-argocd-manifests/blob/main/argocd-apps/fastapi-svc-app.yaml)
+**配置内容片段**：
+```yaml
+    helm:
+      values: |
+        # ... 基础配置省略 ...
+        route:
+          enabled: true
+          parentGateway: kong-main-gateway
+          path: /svc2
+```
 
 **踩坑记录**：
 我们试图利用 Gateway API 的 `URLRewrite` 规范，在 Kong 层面将 `/svc2` 前缀剥离（类似 Nginx 的 `rewrite`），然后再将干净的 `/` 路径请求发送给后端的 FastAPI。然而，**由于 Kong KIC 当前的传统底层引擎限制，它并没有完全支持 Gateway API 中标准的 URLRewrite 路径剥离过滤器。**
