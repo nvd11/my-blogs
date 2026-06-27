@@ -70,17 +70,21 @@ sequenceDiagram
 在业务微服务上线之前，必须通过 ArgoCD 预先部署基础设施基石，并严格保证依赖顺序。我们采用了 ArgoCD 经典的 **App of Apps** 模式。
 
 ### 2.1 root-bootstrap (万物之源)
-作为管理其他所有 ArgoCD App 的“母应用”。只需要在集群中手动创建这一个 App，它就会自动去 Git 仓库拉取并创建其他的子应用，实现纯粹的声明式集群引导。
+- **源码链接**：[root-bootstrap-app.yaml](https://github.com/nvd11/my-argocd-manifests/blob/main/argocd-apps/root-bootstrap-app.yaml)
+- **说明**：作为管理其他所有 ArgoCD App 的“母应用”。只需要在集群中手动创建这一个 App，它就会自动去 Git 仓库拉取并创建其他的子应用，实现纯粹的声明式集群引导。
 
 ### 2.2 gateway-api-crds
+- **源码链接**：[gateway-api-crds-app.yaml](https://github.com/nvd11/my-argocd-manifests/blob/main/argocd-apps/gateway-api-crds-app.yaml)
 - **作用**：注入 K8s 标准的 Gateway API 自定义资源定义（如 `GatewayClass`, `Gateway`, `HTTPRoute`）。
 - **意义**：必须在网关控制器启动前安装，否则集群无法识别这些新时代的路由对象。
 
 ### 2.3 kong-ingress-controller
+- **源码链接**：[kong-controller-app.yaml](https://github.com/nvd11/my-argocd-manifests/blob/main/argocd-apps/kong-controller-app.yaml)
 - **作用**：真正的流量引擎和大脑（Kong KIC）。
 - **意义**：监听 K8s 集群中的 Gateway API 资源变化，并将其翻译为 Kong 的底层 Nginx/Lua 路由规则。
 
 ### 2.4 kong-gateway-infra
+- **源码链接**：[kong-infra-app.yaml](https://github.com/nvd11/my-argocd-manifests/blob/main/argocd-apps/kong-infra-app.yaml)
 - **作用**：基础设施级配置应用。
 - **意义**：实例化具体的 `GatewayClass` 和 `Gateway` 资源（例如声明一个监听 80 端口的 `kong-main-gateway`），为后续业务微服务的 `HTTPRoute` 提供挂载锚点。
 
