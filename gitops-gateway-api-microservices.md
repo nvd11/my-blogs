@@ -64,3 +64,40 @@ sequenceDiagram
         deactivate K8s
     end
 ```
+
+## 2. 核心基建：ArgoCD 预装应用矩阵与 App of Apps
+
+在业务微服务上线之前，必须通过 ArgoCD 预先部署基础设施基石，并严格保证依赖顺序。我们采用了 ArgoCD 经典的 **App of Apps** 模式。
+
+### 2.1 root-bootstrap (万物之源)
+作为管理其他所有 ArgoCD App 的“母应用”。只需要在集群中手动创建这一个 App，它就会自动去 Git 仓库拉取并创建其他的子应用，实现纯粹的声明式集群引导。
+
+### 2.2 gateway-api-crds
+- **作用**：注入 K8s 标准的 Gateway API 自定义资源定义（如 `GatewayClass`, `Gateway`, `HTTPRoute`）。
+- **意义**：必须在网关控制器启动前安装，否则集群无法识别这些新时代的路由对象。
+
+### 2.3 kong-ingress-controller
+- **作用**：真正的流量引擎和大脑（Kong KIC）。
+- **意义**：监听 K8s 集群中的 Gateway API 资源变化，并将其翻译为 Kong 的底层 Nginx/Lua 路由规则。
+
+### 2.4 kong-gateway-infra
+- **作用**：基础设施级配置应用。
+- **意义**：实例化具体的 `GatewayClass` 和 `Gateway` 资源（例如声明一个监听 80 端口的 `kong-main-gateway`），为后续业务微服务的 `HTTPRoute` 提供挂载锚点。
+
+## 3. 跨云架构与多集群部署 (Multi-Cloud Architecture)
+
+为了实现高可用和灵活调度，我们的架构物理部署跨越了多个云厂商（阿里云、Oracle Cloud、AWS、腾讯云），通过 Tailscale Mesh 网络实现内网互联。
+
+### 3.1 控制面 (Control Plane: ArgoCD Cluster)
+- **部署位置**：分布在 Aliyun (Master), AWS (Worker), OCI (Worker) 组成的高可用 K3s 集群中。
+- **通信机制**：节点间通过 Tailscale Mesh (100.x.x.x) 进行内网通信。ArgoCD 的各个组件（`repo-server`, `app-controller`, `redis` 等）分布在这些节点上。
+- **职责**：`app-controller` 负责从 GitHub 拉取声明式 YAML，并通过公网（或 Tailscale）将指令下发到目标业务集群的 Kubernetes API Server。
+
+### 3.2 数据面 (Data Plane: Target Cluster)
+- **部署位置**：本实验的 Target Cluster 1 部署在腾讯云 (Tencent Cloud K3s Cluster)。
+- **职责**：接收来自 ArgoCD 控制面的 Gateway API (HTTPRoute/Gateway) 图纸。Kong KIC 监听这些变化，并将配置推送到 Kong Proxy 数据面，最终将外部流量路由到后端的 Quarkus 或 FastAPI 服务。
+
+我们利用 Draw.io 绘制了该跨云架构图，源文件已存入代码库，可通过 Draw.io 随时编辑更新：
+
+> **架构图文件位置**: `drawio/kong-multi-cloud-architecture.drawio`
+

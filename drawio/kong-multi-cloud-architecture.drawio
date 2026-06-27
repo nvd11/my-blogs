@@ -1,0 +1,106 @@
+<mxfile host="Electron" modified="2023-10-27T10:00:00.000Z" agent="Mozilla/5.0" etag="12345" version="22.0.4" type="device">
+  <diagram id="diag1" name="Multi-Cloud Architecture">
+    <mxGraphModel dx="1400" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        
+        <!-- GitHub Repo Box -->
+        <mxCell id="github_repo" value="Global Single Source of Truth&#xa;GitHub Repository (kong-gitops-experiment / my-argocd-manifests)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;align=center;verticalAlign=top;spacingTop=10;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="100" y="40" width="800" height="120" as="geometry" />
+        </mxCell>
+        
+        <!-- HTTPRoute YAML in Repo -->
+        <mxCell id="git_yaml" value="k8s-dp/ (Gateway API: HTTPRoute)&#xa;Target: Cluster 1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="github_repo">
+          <mxGeometry x="250" y="50" width="300" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Site 3: Multi-Cloud Tailscale Mesh -->
+        <mxCell id="site3" value="Site 3: Multi-Cloud Tailscale Mesh (Aliyun + OCI + AWS)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=center;verticalAlign=top;spacingTop=10;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="100" y="240" width="800" height="200" as="geometry" />
+        </mxCell>
+
+        <!-- ArgoCD Cluster Dashed Box -->
+        <mxCell id="argocd_cluster" value="Control Plane 1 (ArgoCD Cluster - 4 Nodes)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#82b366;dashed=1;align=center;verticalAlign=top;spacingTop=10;fontStyle=1" vertex="1" parent="site3">
+          <mxGeometry x="30" y="40" width="740" height="130" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="aliyun_master" value="Aliyun Master&#xa;(Control Plane)" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#ffffff;strokeColor=#000000;" vertex="1" parent="argocd_cluster">
+          <mxGeometry x="40" y="40" width="140" height="60" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="aws_worker" value="AWS Worker&#xa;(repo-server, redis)" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#ffffff;strokeColor=#000000;" vertex="1" parent="argocd_cluster">
+          <mxGeometry x="210" y="40" width="140" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="oci_worker1" value="OCI Worker 1&#xa;(app-controller)" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#ffffff;strokeColor=#000000;" vertex="1" parent="argocd_cluster">
+          <mxGeometry x="380" y="40" width="140" height="60" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="oci_worker2" value="OCI Worker 2&#xa;(argocd-server)" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#ffffff;strokeColor=#000000;" vertex="1" parent="argocd_cluster">
+          <mxGeometry x="550" y="40" width="140" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Inter-Node Comms -->
+        <mxCell id="inter_node" value="Inter-Node Comms: Tailscale Mesh (100.x.x.x)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=2;fontColor=#666666;" vertex="1" parent="argocd_cluster">
+          <mxGeometry x="220" y="100" width="300" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- Site 1: Tencent Cloud -->
+        <mxCell id="site1" value="Site 1: Tencent Cloud (K3s Cluster)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=center;verticalAlign=top;spacingTop=10;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="100" y="520" width="800" height="280" as="geometry" />
+        </mxCell>
+
+        <!-- Target Cluster 1 -->
+        <mxCell id="target_cluster" value="Target Cluster 1 (Kong CP + DP)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#cce5ff;strokeColor=#36393d;align=center;verticalAlign=top;spacingTop=5;fontStyle=1" vertex="1" parent="site1">
+          <mxGeometry x="50" y="40" width="400" height="150" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="gateway_api" value="Gateway API (HTTPRoute / Gateway)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;dashed=1;fontStyle=1" vertex="1" parent="target_cluster">
+          <mxGeometry x="20" y="30" width="360" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="kong_cp" value="Kong Control Plane (KIC)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;" vertex="1" parent="target_cluster">
+          <mxGeometry x="20" y="70" width="360" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="kong_dp" value="Kong Data Plane (Proxy)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontStyle=1" vertex="1" parent="target_cluster">
+          <mxGeometry x="20" y="110" width="360" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="quarkus_svc" value="Quarkus SVCS" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1" vertex="1" parent="site1">
+          <mxGeometry x="175" y="210" width="150" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="tencent_api" value="Tencent K3s API&#xa;(TCP 6443)" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1" vertex="1" parent="site1">
+          <mxGeometry x="600" y="60" width="140" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Edges -->
+        <mxCell id="edge1" value="1. Git Pull (Fetch YAMLs)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;exitX=0.5;exitY=0;exitDx=0;exitDy=0;fontColor=#666666;fontStyle=2" edge="1" parent="1" source="oci_worker1" target="git_yaml">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="edge2" value="2. Apply Gateway API YAMLs" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;fontColor=#666666;fontStyle=2" edge="1" parent="1" source="oci_worker1" target="tencent_api">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="edge3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;exitX=0;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="site1" source="tencent_api" target="gateway_api">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="edge4" value="Watch / Listen" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;fontColor=#666666;fontStyle=2" edge="1" parent="target_cluster" source="gateway_api" target="kong_cp">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="edge5" value="Push Kong Config" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;fontColor=#666666;fontStyle=2" edge="1" parent="target_cluster" source="kong_cp" target="kong_dp">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="edge6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="site1" source="kong_dp" target="quarkus_svc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
