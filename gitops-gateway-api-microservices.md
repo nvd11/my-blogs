@@ -1,4 +1,4 @@
-# 基于 GitOps 与 Gateway API 的现代微服务架构实践：从流量路由到自动化交付
+# 基于 Kong Gateway API 与 GitOps 的现代微服务架构实践：从流量路由到自动化交付
 
 ## 1. 背景与架构愿景 (Introduction & Architecture Vision)
 
