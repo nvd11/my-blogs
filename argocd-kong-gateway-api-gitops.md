@@ -13,24 +13,24 @@
 
 ```mermaid
 graph TD
-    subgraph GitRepo [Git 仓库 (my-argocd-manifests)]
+    subgraph GitRepo ["Git 仓库 (my-argocd-manifests)"]
         direction TB
-        App[argocd-apps/ <br/> (ArgoCD 快递单)]
-        Infra[infrastructure/kong-gateway/ <br/> (K8s 基建实体)]
+        App["argocd-apps/ <br/> (ArgoCD 快递单)"]
+        Infra["infrastructure/kong-gateway/ <br/> (K8s 基建实体)"]
     end
 
-    subgraph ControlPlane [控制面: 阿里云集群]
-        ArgoCD[ArgoCD 控制器]
-        App1[kong-controller-app]
-        App2[kong-infra-app]
+    subgraph ControlPlane ["控制面: 阿里云集群"]
+        ArgoCD["ArgoCD 控制器"]
+        App1["kong-controller-app"]
+        App2["kong-infra-app"]
         ArgoCD -->|读取并同步| App1
         ArgoCD -->|读取并同步| App2
     end
 
-    subgraph DataPlane [数据面: 腾讯云集群]
-        KIC[Kong 控制器程序 <br/> (konghq.com/kic-gateway-controller)]
-        GC[GatewayClass <br/> (name: kong)]
-        GW[Gateway <br/> (name: kong-main-gateway)]
+    subgraph DataPlane ["数据面: 腾讯云集群"]
+        KIC["Kong 控制器程序 <br/> (konghq.com/kic-gateway-controller)"]
+        GC["GatewayClass <br/> (name: kong)"]
+        GW["Gateway <br/> (name: kong-main-gateway)"]
     end
 
     App -.->|Git 同步| ArgoCD
@@ -40,8 +40,8 @@ graph TD
     Infra -.->|落地为| GC
     Infra -.->|落地为| GW
     
-    GC -.->|认领大门 (controllerName)| KIC
-    GW -.->|关联类别 (gatewayClassName)| GC
+    GC -.->|认领大门| KIC
+    GW -.->|关联类别| GC
 ```
 
 ## 二、 核心部署流程解析
