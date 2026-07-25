@@ -191,3 +191,19 @@ spec:
 1. **职责单一**：`argocd-apps` 只负责派发指令，`infrastructure` 只负责落地实体。
 2. **时序可控**：Sync Waves 确保了 `CRD -> 控制器 -> 自定义资源` 的正确启动顺序。
 3. **架构解耦**：利用标准的 Gateway API 和 `GatewayClass` 机制，业务应用（创建 `HTTPRoute` 时）只需认准 `kong-main-gateway`，完全不需要关心底层跑的是 Kong、Envoy 还是 Nginx。
+
+---
+
+## 四、 常见问题 (Q&A)
+
+**Q: 为什么 `kong-controller-app` 会执行 Helm 安装，而 `kong-infra-app` 只是单纯地投递 YAML？ArgoCD 是如何区分这两者的？**
+
+**A:** 其实这两个应用最终的**目的地都是一致的**（都会部署到目标 Kubernetes 集群），区别在于 ArgoCD 的**“加工方式”**不同。ArgoCD 极其智能，它会根据 `Application` 中 `source` 块的定义来自动选择渲染引擎：
+
+- **触发 Helm 渲染模式**（如 `kong-controller-app.yaml`）：
+  当 ArgoCD 看到配置中包含了 `chart: kong` 和 `helm:` 关键字，并且 `repoURL` 指向的是一个 Helm 仓库（如 `https://charts.konghq.com`）时，它会意识到这是一个 Helm 包。ArgoCD 会先在控制面调用 Helm 引擎，将 `values` 里的参数注入并渲染出完整的 K8s YAML 清单，然后再应用到目标集群。
+  
+- **纯 YAML 直投模式**（如 `kong-infra-app.yaml`）：
+  当配置中的 `repoURL` 是一个普通的 Git 仓库，且仅指定了 `path` 目录，而**没有**看到 `chart` 等关键字时。ArgoCD 会直接去拉取该 Git 目录下的纯文本 YAML 文件，不经过任何二次渲染，原封不动地 `kubectl apply` 到目标集群。
+
+通过这种“看菜下饭”的机制，我们在同一个 ArgoCD 实例下，既能管理复杂的第三方 Helm 控制器，也能精细化控制纯手工编写的基建 YAML，实现了极大的灵活性。
