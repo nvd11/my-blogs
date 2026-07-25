@@ -207,3 +207,23 @@ spec:
   当配置中的 `repoURL` 是一个普通的 Git 仓库，且仅指定了 `path` 目录，而**没有**看到 `chart` 等关键字时。ArgoCD 会直接去拉取该 Git 目录下的纯文本 YAML 文件，不经过任何二次渲染，原封不动地 `kubectl apply` 到目标集群。
 
 通过这种“看菜下饭”的机制，我们在同一个 ArgoCD 实例下，既能管理复杂的第三方 Helm 控制器，也能精细化控制纯手工编写的基建 YAML，实现了极大的灵活性。
+
+**Q: 所谓的 CRD（字典）在这个架构中究竟包含了哪些具体的资源？**
+
+**A:** 在这个部署架构中，实际上引入了**两套截然不同**的 CRD（Custom Resource Definition），它们让 K8s 能够识别不同类型的自定义资源：
+
+1. **Gateway API 官方 CRD**（由 `gateway-api-crds-app.yaml` 在波次 1 显式安装）：
+   这套字典属于 K8s 官方标准规范，包含了所有网关接口类型的定义。核心包含：
+   - `gatewayclasses.gateway.networking.k8s.io` (让 K8s 认识 `kind: GatewayClass`)
+   - `gateways.gateway.networking.k8s.io` (让 K8s 认识 `kind: Gateway`)
+   - `httproutes.gateway.networking.k8s.io` (让 K8s 认识 `kind: HTTPRoute`)
+   - 其他如 `grpcroutes`, `referencegrants` 等
+
+2. **Kong 私有 CRD**（由 Kong Helm Chart 自动隐式安装）：
+   当我们通过 `kong-controller-app.yaml` 安装 KIC 时，即便我们设置了 `installCRDs: false`（这是为了防止 Helm 模板渲染阶段产生冗余），Helm 的底层机制依然会在首次安装时，读取 Chart 包里的特权目录 `crds/`，将 Kong 专属的字典一并装入集群。它们包含：
+   - `kongplugins.configuration.konghq.com` (让 K8s 认识 `kind: KongPlugin`，可用于添加限流、安全、请求重写等插件)
+   - `kongconsumers.configuration.konghq.com` (让 K8s 认识 `kind: KongConsumer`)
+   - `kongingresses.configuration.konghq.com` (让 K8s 认识 `kind: KongIngress`)
+   - 其他诸如 `tcpingresses`, `udpingresses` 等
+
+**总结**：您能够在集群中编写解耦的 `kind: Gateway` 实体，是因为装了第一套官方的 CRD；而如果未来要利用 Kong 的生态（比如定义 `kind: KongPlugin`），底气则来源于第二套随控制器一起附带的私有 CRD。
