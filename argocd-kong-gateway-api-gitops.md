@@ -9,6 +9,41 @@
 1. **`argocd-apps/`（调度指挥部）**：存放所有的 `kind: Application` 文件。这些文件相当于“快递单”，它们负责告诉 ArgoCD 去哪里拉取配置（比如远端 Helm 仓库或其他 Git 目录），并空投到哪个目标集群。
 2. **`infrastructure/kong-gateway/`（基建实体）**：存放目标集群真正需要落地的纯 K8s 资源清单（比如 `GatewayClass`、`Gateway`）。
 
+### 1.1 全景架构图
+
+```mermaid
+graph TD
+    subgraph GitRepo [Git 仓库 (my-argocd-manifests)]
+        direction TB
+        App[argocd-apps/ <br/> (ArgoCD 快递单)]
+        Infra[infrastructure/kong-gateway/ <br/> (K8s 基建实体)]
+    end
+
+    subgraph ControlPlane [控制面: 阿里云集群]
+        ArgoCD[ArgoCD 控制器]
+        App1[kong-controller-app]
+        App2[kong-infra-app]
+        ArgoCD -->|读取并同步| App1
+        ArgoCD -->|读取并同步| App2
+    end
+
+    subgraph DataPlane [数据面: 腾讯云集群]
+        KIC[Kong 控制器程序 <br/> (konghq.com/kic-gateway-controller)]
+        GC[GatewayClass <br/> (name: kong)]
+        GW[Gateway <br/> (name: kong-main-gateway)]
+    end
+
+    App -.->|Git 同步| ArgoCD
+    
+    App1 ==>|派送: Helm 安装| KIC
+    App2 ==>|派送: 投递 YAML| Infra
+    Infra -.->|落地为| GC
+    Infra -.->|落地为| GW
+    
+    GC -.->|认领大门 (controllerName)| KIC
+    GW -.->|关联类别 (gatewayClassName)| GC
+```
+
 ## 二、 核心部署流程解析
 
 部署整个网关体系存在严格的先后依赖关系：必须先有 CRD（字典），才能启动控制器（解析程序），最后才能创建网关实体。我们通过 ArgoCD 的 **Sync Waves（同步波次）** 完美解决了这个问题。
