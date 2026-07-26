@@ -31,6 +31,24 @@
 
 在现代流处理框架中，Watermark 存在的最核心意义可以归结为两个“身份”：
 
+```mermaid
+graph TD
+    %% 发令枪逻辑
+    subgraph 使命一：当发令枪 (触发结算)
+        W_State[当前 Watermark 不断推进] --> W_Check{Watermark >= 窗口结束时间?}
+        W_Check -- "是" --> W_Action1[🟢 关门！触发聚合计算并输出结果]
+        W_Check -- "否" --> W_Action2[⏳ 憋着！窗口继续保持开放等待]
+    end
+
+    %% 迟到判官逻辑
+    subgraph 使命二：当迟到判官 (鉴别旧账)
+        D_Arrive[一条新数据到达] --> D_Extract[提取数据的 event_time]
+        D_Extract --> D_Check{event_time < 当前 Watermark?}
+        D_Check -- "是" --> D_Action1[🔴 迟到数据 Late Data]
+        D_Check -- "否" --> D_Action2[🟢 准时数据 正常入窗]
+    end
+```
+
 1. **使命一：当发令枪（触发窗口计算，关闭当前窗口）**
    * **逻辑**：当 `Watermark >= 窗口结束时间` 时。
    * **意义**：系统借此判定“这个窗口的数据大概率来齐了”，于是果断关门、执行聚合计算并输出结果。它解决了流处理中最根本的问题——**“无尽的数据流，到底该在什么时候出结果”**。
