@@ -34,14 +34,14 @@
 ```mermaid
 graph TD
     %% 发令枪逻辑
-    subgraph 使命一：当发令枪 (触发结算)
+    subgraph Mission1 [使命一：当发令枪 - 触发结算]
         W_State[当前 Watermark 不断推进] --> W_Check{Watermark >= 窗口结束时间?}
         W_Check -- "是" --> W_Action1[🟢 关门！触发聚合计算并输出结果]
         W_Check -- "否" --> W_Action2[⏳ 憋着！窗口继续保持开放等待]
     end
 
     %% 迟到判官逻辑
-    subgraph 使命二：当迟到判官 (鉴别旧账)
+    subgraph Mission2 [使命二：当迟到判官 - 鉴别旧账]
         D_Arrive[一条新数据到达] --> D_Extract[提取数据的 event_time]
         D_Extract --> D_Check{event_time < 当前 Watermark?}
         D_Check -- "是" --> D_Action1[🔴 迟到数据 Late Data]
