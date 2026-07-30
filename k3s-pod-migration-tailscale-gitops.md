@@ -8,7 +8,47 @@
 
 ## 1. 架构设计与网络打通
 
-### 1.1 Tailscale + Flannel 跨网穿透
+### 1.1 整体 Infrastructure 拓扑架构图
+
+下图展示了跨云控制面、数据面网关与本地 Homelab 节点的物理网络及流量调度全景拓扑：
+
+```mermaid
+flowchart TB
+    subgraph Client["🌐 外部公网客户端"]
+        User["User Request<br/>HTTP GET /svc1"]
+    end
+
+    subgraph Aliyun["☁️ 阿里云 (Hub / CP1)"]
+        ArgoCD["ArgoCD Master<br/>8.148.149.80 / 100.114.103.101<br/>(GitOps 调度大脑)"]
+    end
+
+    subgraph Tencent["☁️ 腾讯云 (Spoke / DP1)"]
+        K3sMaster["K3s Control Plane<br/>43.139.214.231 / 100.77.64.95"]
+        KongProxy["Kong Ingress Gateway<br/>(v3.6.1 DB-less 模式)"]
+    end
+
+    subgraph HomeLAN["🏠 家庭局域网 (Homelab)"]
+        subgraph NUCNode["Intel NUC (Nova)"]
+            K3sAgent["K3s Agent Worker<br/>10.0.1.113 / 100.104.150.19"]
+            QuarkusPod["Java Quarkus Pod<br/>Pod IP: 10.42.1.13:8080"]
+        end
+    end
+
+    subgraph TailscaleMesh["🔐 Tailscale Mesh & Flannel VXLAN 虚拟网络 (100.x.x.x / 10.42.x.x)"]
+        MeshNet["加密 P2P 直连通道 (RTT ~6.4ms)"]
+    end
+
+    User -->|1. 访问 43.139.214.231/svc1| KongProxy
+    ArgoCD -.->|2. 下发 K8s 部署图纸| K3sMaster
+    ArgoCD -.->|2. 下发 K8s 部署图纸| K3sAgent
+    KongProxy ==>|3. Flannel VXLAN 跨网转发| QuarkusPod
+
+    K3sMaster --- MeshNet
+    K3sAgent --- MeshNet
+    ArgoCD --- MeshNet
+```
+
+### 1.2 Tailscale + Flannel 跨网穿透
 云端 VPS 与本地 Homelab 之间没有固定公网 IP，直接暴露端口存在安全隐患。我们采用 Tailscale 组建 Mesh 虚拟局域网，将所有通信收拢在加密通道内。
 
 - **控制面 (Master)**：腾讯云 Debian 2C2G，Tailscale IP 为 `100.77.64.95`
