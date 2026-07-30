@@ -55,26 +55,17 @@ mirrors:
 
 根据“CI 与代码同行，CD 与代码隔离”原则，迁移 Pod 物理节点**不需要修改任何业务代码**，仅需在基础设施模具与 CD 配置库中申明。
 
-```
-+--------------------------+        +---------------------------+
-| my-shared-helm-charts    |        | my-argocd-manifests       |
-| (通用 Helm 模具)          |        | (ArgoCD 部署图纸)         |
-| 新增 nodeSelector 语法   |        | 注入 nodeSelector 指定 nuc|
-+------------+-------------+        +-------------+-------------+
-             |                                    |
-             +------------------+-----------------+
-                                |
-                                v
-                   +--------------------------+
-                   | ArgoCD (Aliyun CP1)      |
-                   | 自动监听 Git 变更并 Sync |
-                   +------------+-------------+
-                                |
-                                v
-                   +--------------------------+
-                   | K3s Cluster (Tencent DP1)|
-                   | 销毁旧 Pod，在 NUC 启动  |
-                   +--------------------------+
+```mermaid
+flowchart TD
+    ChartRepo["my-shared-helm-charts<br/>(通用 Helm 模具)<br/>新增 nodeSelector 语法"]
+    ManifestRepo["my-argocd-manifests<br/>(ArgoCD 部署图纸)<br/>注入 nodeSelector 指定 nuc"]
+    
+    ArgoCD["ArgoCD (Aliyun CP1)<br/>自动监听 Git 变更并 Sync"]
+    K3sCluster["K3s Cluster (Tencent DP1)<br/>销毁旧 Pod，在 NUC 启动新 Pod"]
+
+    ChartRepo --> ArgoCD
+    ManifestRepo --> ArgoCD
+    ArgoCD --> K3sCluster
 ```
 
 ### 2.1 修改通用 Helm 模板库 (`my-shared-helm-charts`)
