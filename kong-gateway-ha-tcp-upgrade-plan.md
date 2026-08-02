@@ -69,7 +69,7 @@ spec:
 
 | 目标 | 仓库 | 文件 | 改动内容 |
 |------|------|------|---------|
-| 目标 1 | `nvd11/my-argocd-manifests` | `argocd-apps/kong-controller-app.yaml` | `helm.values` 加 `controller.replicas: 3` + 反亲和 |
+| 目标 1 | `nvd11/my-argocd-manifests` | `argocd-apps/kong-controller-app.yaml` | `helm.values` 加 `deployment.daemonset: true`（首选，无需硬编码副本数） |
 | 目标 2 | `nvd11/my-argocd-manifests` | `argocd-apps/kong-controller-app.yaml` | `helm.values` 加 `proxy.externalTrafficPolicy: Local` |
 | 目标 3 | `nvd11/my-argocd-manifests` | `argocd-apps/kong-controller-app.yaml` | `helm.values` 加 `proxy.stream` + `nginx_stream_listen` |
 | 目标 3 | `nvd11/redis-deployment` | `k8s/redis.yaml`（追加）或新建 `k8s/tcpingress.yaml` | 新增 `TCPIngress` 资源 |
@@ -80,7 +80,11 @@ spec:
 
 **文件**：`my-argocd-manifests/argocd-apps/kong-controller-app.yaml`
 
-**改动**：在现有 `helm.values` 里追加：
+**首选方案：DaemonSet 模式（推荐，摆脱硬编码副本数）**
+
+Kong chart 原生支持 `deployment.daemonset: true`，把 controller 从 Deployment 渲染成 **DaemonSet**——K8s 的 DaemonSet 天生就是"每个节点一个 pod"，**不需要写 `replicas`，节点数变多少就有多少 pod**，加节点自动扩容、删节点自动收缩。
+
+**改动**：在现有 `helm.values` 里追加（只需一行开关）：
 
 ```yaml
     helm:
@@ -91,24 +95,18 @@ spec:
           database: "off"    # 保留
         gateway:
           enabled: true      # 保留
-        controller:                                   # ← 新增
-          replicas: 3                                 # ← 新增
-          affinity:                                   # ← 新增
-            podAntiAffinity:
-              requiredDuringSchedulingIgnoredDuringExecution:
-                - labelSelector:
-                    matchLabels:
-                      app.kubernetes.io/name: kong
-                  topologyKey: kubernetes.io/hostname
+        deployment:                                  # ← 新增
+          daemonset: true                            # ← 新增: DaemonSet 模式
 ```
 
-- `replicas: 3`：3 副本
-- `podAntiAffinity` + `topologyKey: kubernetes.io/hostname`：保证 3 个 pod 分布在不同节点，不会挤在一起
-- 注意：KIC 多副本时只有 leader 实际 watch K8s 写配置，其余 standby；配置同步后所有 proxy 数据面都生效
+**为什么这是正解**：
+- 不硬编码 `3`，集群加节点 → 自动多一个 controller pod，天然"一个 node 一个 pod"
+- DaemonSet 模式模板自动省略 `replicas` 字段（已从 chart 源码确认）
+- 与 svclb 的机制完全一致（svclb 也是 DaemonSet，每节点一个）
 
-**"一个 node 一个 pod"的两种实现方式**（效果相同，机制不同，二选一）：
+**备选方案：Deployment + replicas（如果不想用 DaemonSet）**
 
-**方式 A：podAntiAffinity（硬性排他，推荐）** —— 语义就是"同一 hostname 不许有两个 kong pod"。上面示例用的就是这种方式，配合 `replicas: 3` 自然分散到 3 节点。核心就两行：
+需要硬编码副本数，节点数变化时要手动改：
 
 ```yaml
         controller:
@@ -121,6 +119,10 @@ spec:
                       app.kubernetes.io/name: kong
                   topologyKey: kubernetes.io/hostname   # 按节点维度排他
 ```
+
+**"一个 node 一个 pod"的两种实现方式**（仅针对 Deployment 备选，效果相同、机制不同，二选一）：
+
+**方式 A：podAntiAffinity（硬性排他，推荐）** —— 语义就是"同一 hostname 不许有两个 kong pod"，配合 `replicas: 3` 自然分散到 3 节点。上面备选方案就是方式 A。
 
 **方式 B：topologySpreadConstraints（拓扑分布）** —— K8s 1.19+ 官方推荐的现代做法，`maxSkew: 1` 表示节点间 pod 数差异不超过 1：
 
@@ -136,14 +138,15 @@ spec:
                   app.kubernetes.io/name: kong
 ```
 
-**选择建议**：3 节点 3 副本这种"精确对等"场景用方式 A（硬性、直白、无中间态）；节点数多于副本数的弹性场景用方式 B（允许均匀分布但不卡死）。
+**选择建议**：首选 DaemonSet 模式（无需管副本数）；如果必须用 Deployment，3 节点 3 副本的"精确对等"场景用方式 A（硬性、直白、无中间态）；节点数多于副本数的弹性场景用方式 B。
 
-**预期效果**：
+**预期效果（DaemonSet 模式）**：
 
 ```
-vm-0-2-debian:  kong-controller pod #1 (leader 或 standby)
-free-arm-vm:    kong-controller pod #2
-nuc:            kong-controller pod #3
+vm-0-2-debian:  kong-controller pod (DaemonSet 自动)
+free-arm-vm:    kong-controller pod (DaemonSet 自动)
+nuc:            kong-controller pod (DaemonSet 自动)
+新增节点:        kong-controller pod 自动出现 ← 无需改配置！
 ```
 
 ### 目标 2：让 3 门卫只找自己节点的 Kong Controller
@@ -222,11 +225,11 @@ spec:
 ```bash
 # 1. 编辑文件
 cd ~/my-argocd-manifests
-vim argocd-apps/kong-controller-app.yaml    # helm.values 加 controller.replicas:3 + affinity
+vim argocd-apps/kong-controller-app.yaml    # helm.values 加 deployment.daemonset: true
 
 # 2. 推送 (ArgoCD 自动同步, ≤3分钟)
 git add argocd-apps/kong-controller-app.yaml
-git commit -m "feat(kong): scale controller to 3 replicas with pod anti-affinity"
+git commit -m "feat(kong): deploy controller as DaemonSet (one pod per node)"
 git push origin main
 ```
 
