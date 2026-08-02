@@ -71,8 +71,8 @@ spec:
 |------|------|------|---------|
 | 目标 1 | `nvd11/my-argocd-manifests` | `argocd-apps/kong-controller-app.yaml` | `helm.values` 加 `deployment.daemonset: true`（首选，无需硬编码副本数） |
 | 目标 2 | `nvd11/my-argocd-manifests` | `argocd-apps/kong-controller-app.yaml` | `helm.values` 加 `proxy.externalTrafficPolicy: Local` |
-| 目标 3 | `nvd11/my-argocd-manifests` | `argocd-apps/kong-controller-app.yaml` | `helm.values` 加 `proxy.stream` + `nginx_stream_listen` |
-| 目标 3 | `nvd11/redis-deployment` | `k8s/redis.yaml`（追加）或新建 `k8s/tcpingress.yaml` | 新增 `TCPIngress` 资源 |
+| 目标 3 | `nvd11/my-argocd-manifests` | `argocd-apps/kong-controller-app.yaml` | `helm.values` 加 `proxy.stream` + `nginx_stream_listen`（**本次**） |
+| 目标 3 | `nvd11/redis-deployment` | `k8s/redis.yaml`（追加）或新建 `k8s/tcpingress.yaml` | 新增 `TCPIngress` 资源（**下次**，Redis 接入时） |
 
 **为什么都在 `kong-controller-app.yaml`？** 因为 Kong 是 Helm chart 部署的，所有配置（副本数、亲和性、网络策略、stream）都是 chart 的 values，集中在 ArgoCD Application 的 `helm.values` 字段。改这一个文件 → push → ArgoCD 自动同步 → 生效。
 
@@ -174,7 +174,10 @@ nuc:            kong-controller pod (DaemonSet 自动)
 
 ### 目标 3：让 Kong Controller 支持 TCP 流量转发
 
-**文件 A**：`my-argocd-manifests/argocd-apps/kong-controller-app.yaml`（开 stream）
+> **本次范围**：只做 Kong 侧的 TCP 能力（文件 A）——让 Kong 能监听并转发 TCP 端口。
+> **下次范围**：Redis 接入（文件 B + Redis 部署）——定义具体路由规则，作为独立阶段再做。
+
+**文件 A（本次）**：`my-argocd-manifests/argocd-apps/kong-controller-app.yaml`（开 stream）
 
 **改动**：在 `helm.values` 追加：
 
@@ -182,14 +185,16 @@ nuc:            kong-controller pod (DaemonSet 自动)
         proxy:
           externalTrafficPolicy: Local                # 目标2加的，保留
           stream:                                     # ← 新增
-            - containerPort: 6379                     # ← 新增 (Redis 端口)
+            - containerPort: 6379                     # ← 新增 (示例端口, 可改)
               servicePort: 6379                       # ← 新增
         env:
           database: "off"                             # 保留
           nginx_stream_listen: "[::]:6379"            # ← 新增
 ```
 
-**文件 B**：`redis-deployment/k8s/redis.yaml`（追加 TCPIngress）或新建 `redis-deployment/k8s/tcpingress.yaml`
+**本次验收**：Kong 的 stream 模式开启、6379 端口被监听（`ss -tlnp | grep 6379` 可见）。**不需要** TCPIngress——没有路由规则时流量进得来但没处去，这没关系，本次只验证"能力就绪"。
+
+**文件 B（下次，Redis 接入时再做）**：`redis-deployment/k8s/redis.yaml`（追加 TCPIngress）或新建 `redis-deployment/k8s/tcpingress.yaml`
 
 ```yaml
 apiVersion: configuration.konghq.com/v1beta1
@@ -263,19 +268,36 @@ curl http://100.104.150.19:31850/svc2
 kubectl get svc kong-ingress-controller-kong-proxy -n kong-system -o jsonpath="{.spec.externalTrafficPolicy}"
 ```
 
-### 阶段 D：目标 3 —— TCP 流代理
+### 阶段 D：目标 3 —— 开启 Kong TCP 能力（本次范围）
 
-**文件 A**：`my-argocd-manifests/argocd-apps/kong-controller-app.yaml`（开 stream）
-**文件 B**：`redis-deployment/k8s/redis.yaml`（追加 TCPIngress）或新建 `redis-deployment/k8s/tcpingress.yaml`
+**文件**：`my-argocd-manifests/argocd-apps/kong-controller-app.yaml`（开 stream）
 
 ```bash
-# 1. 编辑文件 A (在目标2的基础上追加 proxy.stream + nginx_stream_listen)
+# 1. 编辑文件 (在目标2的基础上追加 proxy.stream + nginx_stream_listen)
 vim argocd-apps/kong-controller-app.yaml
 git add argocd-apps/kong-controller-app.yaml
 git commit -m "feat(kong): enable TCP stream proxy on 6379"
 git push origin main
+```
 
-# 2. 编辑文件 B (新增 TCPIngress 资源)
+```bash
+# 2. 验证: Kong 的 stream 监听已就绪 (任选一个节点)
+kubectl exec -n kong-system deploy/kong-ingress-controller-kong -- ss -tlnp 2>/dev/null | grep 6379
+# 或在节点上看: ss -tlnp | grep 6379
+# 3. 确认: Kong pod 正常, HTTP 路由不受影响
+kubectl get pods -n kong-system
+curl http://100.77.64.95:31850/svc2
+```
+
+> ✅ 本次到此为止：Kong 已具备 TCP 转发能力（stream 模式开启、端口监听就绪）。
+> 没有 TCPIngress 时流量进得来但无路由可去——这是预期状态，不影响任何现有功能。
+
+### 阶段 D2（下次，Redis 接入时再做）
+
+**文件**：`redis-deployment/k8s/redis.yaml`（追加 TCPIngress）或新建 `redis-deployment/k8s/tcpingress.yaml`
+
+```bash
+# 1. 编辑文件 (新增 TCPIngress 资源)
 cd ~/redis-deployment
 vim k8s/tcpingress.yaml    # 或追加到 k8s/redis.yaml
 git add k8s/
@@ -284,8 +306,8 @@ git push origin main
 ```
 
 ```bash
-# 3. 部署 Redis (如果还没有) 或准备测试 TCP 服务
-# 4. 验证: Redis 经 Kong TCP 转发可达
+# 2. 部署 Redis (如果还没有)
+# 3. 验证: Redis 经 Kong TCP 转发可达
 redis-cli -h 100.77.64.95 -p 6379 -a <PASSWORD> ping   # PONG
 redis-cli -h 100.105.130.0 -p 6379 -a <PASSWORD> ping  # PONG
 redis-cli -h 100.104.150.19 -p 6379 -a <PASSWORD> ping # PONG
@@ -329,9 +351,13 @@ kubectl apply -f ~/kong-backup-2026-08-02/proxy-svc.yaml
 
 ## 6. 验收标准
 
-1. **目标 1**：`kubectl get pods -n kong-system` 3 个 controller，`-o wide` 显示分布在 3 个不同节点
+**本次改造（Kong 能力就绪）**：
+1. **目标 1**：`kubectl get pods -n kong-system` 每个节点 1 个 controller（DaemonSet 模式，`kubectl get ds -n kong-system` 可见）
 2. **目标 2**：`kubectl get svc kong-proxy -o yaml` 的 `externalTrafficPolicy: Local`；三个入口 curl 全部 200
-3. **目标 3**：TCP 流量经 Kong 转发可达（Redis ping PONG），HTTP 路由零回归
+3. **目标 3（本次）**：Kong stream 模式开启，`ss -tlnp | grep 6379` 可见监听；HTTP 路由零回归
+
+**下次（Redis 接入）**：
+4. **目标 3（下次）**：TCPIngress 生效，`redis-cli -h <任意节点> -p 6379 ping` 返回 PONG
 
 ## 7. 后续讨论（暂不实施）
 
