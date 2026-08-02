@@ -65,22 +65,41 @@ spec:
 
 ## 3. 改造目标与实施方案
 
+> **改动文件总览（先看这里）**
+
+| 目标 | 仓库 | 文件 | 改动内容 |
+|------|------|------|---------|
+| 目标 1 | `nvd11/my-argocd-manifests` | `argocd-apps/kong-controller-app.yaml` | `helm.values` 加 `controller.replicas: 3` + 反亲和 |
+| 目标 2 | `nvd11/my-argocd-manifests` | `argocd-apps/kong-controller-app.yaml` | `helm.values` 加 `proxy.externalTrafficPolicy: Local` |
+| 目标 3 | `nvd11/my-argocd-manifests` | `argocd-apps/kong-controller-app.yaml` | `helm.values` 加 `proxy.stream` + `nginx_stream_listen` |
+| 目标 3 | `nvd11/redis-deployment` | `k8s/redis.yaml`（追加）或新建 `k8s/tcpingress.yaml` | 新增 `TCPIngress` 资源 |
+
+**为什么都在 `kong-controller-app.yaml`？** 因为 Kong 是 Helm chart 部署的，所有配置（副本数、亲和性、网络策略、stream）都是 chart 的 values，集中在 ArgoCD Application 的 `helm.values` 字段。改这一个文件 → push → ArgoCD 自动同步 → 生效。
+
 ### 目标 1：让 Kong Controller 覆盖 3 节点
 
-**思路**：`replicas: 3` + 反亲和，让每个节点恰好 1 个 controller pod。
+**文件**：`my-argocd-manifests/argocd-apps/kong-controller-app.yaml`
 
-**方案**（修改 ArgoCD values）：
+**改动**：在现有 `helm.values` 里追加：
 
 ```yaml
-controller:
-  replicas: 3
-  affinity:
-    podAntiAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: kong
-          topologyKey: kubernetes.io/hostname
+    helm:
+      values: |
+        ingressController:
+          installCRDs: false # 保留
+        env:
+          database: "off"    # 保留
+        gateway:
+          enabled: true      # 保留
+        controller:                                   # ← 新增
+          replicas: 3                                 # ← 新增
+          affinity:                                   # ← 新增
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: kong
+                  topologyKey: kubernetes.io/hostname
 ```
 
 - `replicas: 3`：3 副本
@@ -97,13 +116,13 @@ nuc:            kong-controller pod #3
 
 ### 目标 2：让 3 门卫只找自己节点的 Kong Controller
 
-**思路**：`externalTrafficPolicy: Local`，svclb 只转发到本节点的 controller pod。
+**文件**：`my-argocd-manifests/argocd-apps/kong-controller-app.yaml`
 
-**方案**（修改 ArgoCD values）：
+**改动**：在 `helm.values` 追加：
 
 ```yaml
-proxy:
-  externalTrafficPolicy: Local
+        proxy:                                        # ← 新增
+          externalTrafficPolicy: Local                # ← 新增
 ```
 
 **⚠️ 关键前提**：`Local` 策略要求**每个节点都有对应后端 pod**，否则该节点门卫收到的流量会直接丢弃。所以目标 1 必须先完成（3 节点各 1 个 controller），再切 `Local`——**顺序不能反**。
@@ -120,20 +139,22 @@ proxy:
 
 ### 目标 3：让 Kong Controller 支持 TCP 流量转发
 
-**思路**：开启 Kong 的 stream 模式（TCP 代理），用 `TCPIngress` 声明 TCP 路由。
+**文件 A**：`my-argocd-manifests/argocd-apps/kong-controller-app.yaml`（开 stream）
 
-**方案**（修改 ArgoCD values）：
+**改动**：在 `helm.values` 追加：
 
 ```yaml
-proxy:
-  stream:
-    - containerPort: 6379      # Redis 端口（示例）
-      servicePort: 6379
-env:
-  nginx_stream_listen: "[::]:6379"
+        proxy:
+          externalTrafficPolicy: Local                # 目标2加的，保留
+          stream:                                     # ← 新增
+            - containerPort: 6379                     # ← 新增 (Redis 端口)
+              servicePort: 6379                       # ← 新增
+        env:
+          database: "off"                             # 保留
+          nginx_stream_listen: "[::]:6379"            # ← 新增
 ```
 
-创建 TCPIngress 资源（加到 redis-deployment 仓库或独立 manifest）：
+**文件 B**：`redis-deployment/k8s/redis.yaml`（追加 TCPIngress）或新建 `redis-deployment/k8s/tcpingress.yaml`
 
 ```yaml
 apiVersion: configuration.konghq.com/v1beta1
@@ -164,31 +185,94 @@ spec:
 
 ### 阶段 B：目标 1 —— Controller 三副本
 
-1. 修改 `my-argocd-manifests/argocd-apps/kong-ingress-controller-app.yaml` 的 values
-2. 等待 ArgoCD 自动同步（≤3 分钟）
-3. 验证：`kubectl get pods -n kong-system -o wide` 看到 3 个 controller 分布 3 节点
-4. 验证：fastapi-svc / quarkus-svc HTTP 路由依然正常（`curl http://<任意节点>:31850/svc2`）
+**文件**：`my-argocd-manifests/argocd-apps/kong-controller-app.yaml`
+
+```bash
+# 1. 编辑文件
+cd ~/my-argocd-manifests
+vim argocd-apps/kong-controller-app.yaml    # helm.values 加 controller.replicas:3 + affinity
+
+# 2. 推送 (ArgoCD 自动同步, ≤3分钟)
+git add argocd-apps/kong-controller-app.yaml
+git commit -m "feat(kong): scale controller to 3 replicas with pod anti-affinity"
+git push origin main
+```
+
+```bash
+# 3. 验证: 3 个 controller 分布 3 节点
+kubectl get pods -n kong-system -o wide
+# 4. 验证: HTTP 路由依然正常
+curl http://100.77.64.95:31850/svc2
+curl http://100.105.130.0:31850/svc2
+curl http://100.104.150.19:31850/svc2
+```
 
 ### 阶段 C：目标 2 —— 切换 Local 策略
 
-1. 确认阶段 B 的 3 个 controller pod 已就位
-2. 修改 values 加 `externalTrafficPolicy: Local`
-3. 验证：三个节点入口分别测试，全部 200
-4. 验证：从三个节点分别 curl，确认流量走本节点（可看 controller 日志）
+**文件**：`my-argocd-manifests/argocd-apps/kong-controller-app.yaml`
+
+```bash
+# 1. 编辑文件 (在目标1的基础上追加)
+vim argocd-apps/kong-controller-app.yaml    # helm.values 加 proxy.externalTrafficPolicy: Local
+git add argocd-apps/kong-controller-app.yaml
+git commit -m "feat(kong): set externalTrafficPolicy Local"
+git push origin main
+```
+
+```bash
+# 2. 验证: 三个节点入口全部 200
+curl http://100.77.64.95:31850/svc2
+curl http://100.105.130.0:31850/svc2
+curl http://100.104.150.19:31850/svc2
+# 3. 确认 Service 策略已生效
+kubectl get svc kong-ingress-controller-kong-proxy -n kong-system -o jsonpath="{.spec.externalTrafficPolicy}"
+```
 
 ### 阶段 D：目标 3 —— TCP 流代理
 
-1. 修改 values 加 `proxy.stream` + `nginx_stream_listen`
-2. 部署 Redis（如果还没有）或准备一个测试 TCP 服务
-3. 创建 `TCPIngress` 资源
-4. 验证：`redis-cli -h <任意节点> -p 6379 ping` 经 Kong 转发可达
+**文件 A**：`my-argocd-manifests/argocd-apps/kong-controller-app.yaml`（开 stream）
+**文件 B**：`redis-deployment/k8s/redis.yaml`（追加 TCPIngress）或新建 `redis-deployment/k8s/tcpingress.yaml`
+
+```bash
+# 1. 编辑文件 A (在目标2的基础上追加 proxy.stream + nginx_stream_listen)
+vim argocd-apps/kong-controller-app.yaml
+git add argocd-apps/kong-controller-app.yaml
+git commit -m "feat(kong): enable TCP stream proxy on 6379"
+git push origin main
+
+# 2. 编辑文件 B (新增 TCPIngress 资源)
+cd ~/redis-deployment
+vim k8s/tcpingress.yaml    # 或追加到 k8s/redis.yaml
+git add k8s/
+git commit -m "feat(k8s): add TCPIngress for redis"
+git push origin main
+```
+
+```bash
+# 3. 部署 Redis (如果还没有) 或准备测试 TCP 服务
+# 4. 验证: Redis 经 Kong TCP 转发可达
+redis-cli -h 100.77.64.95 -p 6379 -a <PASSWORD> ping   # PONG
+redis-cli -h 100.105.130.0 -p 6379 -a <PASSWORD> ping  # PONG
+redis-cli -h 100.104.150.19 -p 6379 -a <PASSWORD> ping # PONG
+```
 
 ### 阶段 E：回归测试
 
-- [ ] fastapi-svc `/svc2` 经三个节点入口全部 200
-- [ ] quarkus-svc `/svc1` 经三个节点入口全部 200
-- [ ] TCP 转发（Redis ping）经三个节点入口可达
-- [ ] `kubectl get pods -A` 无异常重启
+**验证命令**（无文件改动）：
+
+```bash
+# fastapi-svc / quarkus-svc 经三个节点入口全部 200
+curl -s -o /dev/null -w "%{http_code}\n" http://100.77.64.95:31850/svc2
+curl -s -o /dev/null -w "%{http_code}\n" http://100.105.130.0:31850/svc2
+curl -s -o /dev/null -w "%{http_code}\n" http://100.104.150.19:31850/svc2
+curl -s -o /dev/null -w "%{http_code}\n" http://100.77.64.95:31850/svc1
+curl -s -o /dev/null -w "%{http_code}\n" http://100.105.130.0:31850/svc1
+curl -s -o /dev/null -w "%{http_code}\n" http://100.104.150.19:31850/svc1
+
+# TCP 转发 (Redis ping) 经三个节点入口可达
+# 集群无异常
+kubectl get pods -A | grep -v Completed
+```
 
 ## 5. 风险与回滚
 
