@@ -15,8 +15,8 @@
 graph TD
     subgraph GitRepo ["Git 仓库 (my-argocd-manifests)"]
         direction TB
-        App["argocd-apps/ <br/> (ArgoCD 快递单)"]
-        Infra["infrastructure/kong-gateway/ <br/> (K8s 基建实体)"]
+        AppDir["argocd-apps/ <br/> (ArgoCD 快递单)"]
+        InfraDir["infrastructure/kong-gateway/ <br/> (K8s 基建实体 YAML)"]
     end
 
     subgraph ControlPlane ["控制面: 阿里云集群"]
@@ -33,12 +33,13 @@ graph TD
         GW["Gateway <br/> (name: kong-main-gateway)"]
     end
 
-    App -.->|Git 同步| ArgoCD
+    AppDir -.->|Git 同步| ArgoCD
     
     App1 ==>|派送: Helm 安装| KIC
-    App2 ==>|派送: 投递 YAML| Infra
-    Infra -.->|落地为| GC
-    Infra -.->|落地为| GW
+    
+    InfraDir -.->|读取 YAML 清单| App2
+    App2 ==>|派送/落地 YAML| GC
+    App2 ==>|派送/落地 YAML| GW
     
     GC -.->|认领大门| KIC
     GW -.->|关联类别| GC
