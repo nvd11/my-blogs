@@ -10,6 +10,7 @@
 flowchart TB
     subgraph Tencent["腾讯云 vm-0-2-debian (Control Plane)"]
         K3sMaster["K3s Server"]
+        SvclbTencent["svclb (Kong LB DaemonSet Pod)"]
         KongController["Kong Controller<br/>(唯一副本, 路由决策)"]
     end
 
@@ -19,18 +20,20 @@ flowchart TB
     end
 
     subgraph NUC["本地 NUC (Worker)"]
-        SvclbNuc["svclb (Kong LB Pod)"]
+        SvclbNuc["svclb (Kong LB DaemonSet Pod)"]
     end
 
-    Client["客户端"] -->|"访问 31850 端口<br/>三个节点 IP 都可"| SvclbArm
+    Client["客户端"] -->|"访问 31850 端口<br/>三个节点 IP 都可"| SvclbTencent
+    Client -->|"访问 31850 端口"| SvclbArm
     Client -->|"访问 31850 端口"| SvclbNuc
-    SvclbArm -->|"iptables DNAT<br/>转发到 Service ClusterIP"| KongController
+    SvclbTencent -->|"iptables DNAT<br/>转发到 Service ClusterIP"| KongController
+    SvclbArm -->|"iptables DNAT"| KongController
     SvclbNuc -->|"iptables DNAT"| KongController
     KongController -->|"HTTPRoute 路由"| Fastapi["fastapi-svc"]
     KongController -->|"HTTPRoute 路由"| Quarkus["quarkus-svc"]
 ```
 
-K3s 的 LoadBalancer（svclb）是 DaemonSet 实现的，每个节点上都会有一个 pod 监听 80/443，收到流量后转发给 Kong Controller 做真正的路由。所以理论上，从三个节点任何一个的 31850 端口进去，都应该能访问到这两个服务。
+K3s 的 LoadBalancer（svclb）是 DaemonSet 实现的，**每个节点上都会有一个 pod**（包括 control-plane 节点，K3s 默认不 taint 控制面）监听 80/443。所以三个节点——腾讯云、OCI、NUC——各有自己的 svclb，收到流量后统一转发给 Kong Controller 做真正的路由。理论上从三个节点任何一个的 31850 端口进去，都应该能访问到这两个服务。
 
 那天我正好在检查这个集群的连通性，就顺手测了一下。
 
