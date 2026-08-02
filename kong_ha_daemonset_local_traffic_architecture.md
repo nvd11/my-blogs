@@ -32,7 +32,7 @@ Kong Proxy Service 的默认流量策略为 `Cluster`。在该模式下，svclb 
 
 ### 1. 改造前拓扑：单点集中 + 跨节点强制绕路
 
-> 说明：图中的入口组件是 **svclb（K3s 为 LoadBalancer Service 自动生成的基础设施组件，每个节点一个）**，监听 31850 端口，用 iptables DNAT 转发到 Kong Controller。svclb 是 K3s 自带的，与本次改造无关——**本次改造的对象是 Kong Controller 的部署形态**（Deployment 单副本 → DaemonSet 每节点一个）。
+> 说明：图中的入口组件是 **svclb（K3s 为 LoadBalancer Service 自动生成的 DaemonSet，每个节点一个）**，监听 31850 端口，用 iptables DNAT 转发到 Kong Controller。svclb 是 K3s 自带的基础设施，**一直就是 DaemonSet**，与本次改造无关——**本次改造的对象是 Kong Controller 的部署形态**（Deployment 单副本 → DaemonSet 每节点一个）。
 
 ```mermaid
 graph TD
@@ -43,18 +43,18 @@ graph TD
     end
 
     subgraph Node1 ["腾讯云节点 (vm-0-2-debian)"]
-        LB1["svclb (K3s 自动生成) <br/> 监听 :31850"]
+        LB1["svclb (K3s 自动生成 DaemonSet) <br/> 监听 :31850"]
         KongPod1["Kong Controller (Deployment 单副本) <br/> 改造前: 只有这一个"]
         Svc1["Backend Service A"]
     end
 
     subgraph Node2 ["OCI ARM 节点 (free-arm-vm)"]
-        LB2["svclb (K3s 自动生成) <br/> 监听 :31850"]
+        LB2["svclb (K3s 自动生成 DaemonSet) <br/> 监听 :31850"]
         Svc2["Backend Service B"]
     end
 
     subgraph Node3 ["本地 NUC 节点 (nuc)"]
-        LB3["svclb (K3s 自动生成) <br/> 监听 :31850"]
+        LB3["svclb (K3s 自动生成 DaemonSet) <br/> 监听 :31850"]
     end
 
     C1 ==>|HTTP 请求| LB1
@@ -84,19 +84,19 @@ graph TD
     end
 
     subgraph Node1 ["腾讯云节点 (vm-0-2-debian)"]
-        LB1["svclb (K3s 自动生成) <br/> 监听 :31850"]
+        LB1["svclb (K3s 自动生成 DaemonSet) <br/> 监听 :31850"]
         KongDS1["Kong Controller (DaemonSet) <br/> 改造后: 每节点 1 个 <br/> HTTP + L4 Stream:6379"]
         Svc1["Backend Service A"]
     end
 
     subgraph Node2 ["OCI ARM 节点 (free-arm-vm)"]
-        LB2["svclb (K3s 自动生成) <br/> 监听 :31850"]
+        LB2["svclb (K3s 自动生成 DaemonSet) <br/> 监听 :31850"]
         KongDS2["Kong Controller (DaemonSet) <br/> 改造后: 每节点 1 个 <br/> HTTP + L4 Stream:6379"]
         Svc2["Backend Service B"]
     end
 
     subgraph Node3 ["本地 NUC 节点 (nuc)"]
-        LB3["svclb (K3s 自动生成) <br/> 监听 :31850"]
+        LB3["svclb (K3s 自动生成 DaemonSet) <br/> 监听 :31850"]
         KongDS3["Kong Controller (DaemonSet) <br/> 改造后: 每节点 1 个 <br/> HTTP + L4 Stream:6379"]
     end
 
