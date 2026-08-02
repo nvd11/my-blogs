@@ -135,6 +135,27 @@ iptables -I FORWARD 8 -d 10.42.0.0/16 -j ACCEPT
 
 到这里我开始怀疑：iptables 规则可能只是表象，真正的问题在网络底层。
 
+### 插一段：MTU 是什么
+
+在继续之前，先把 MTU 讲清楚，后面排查全靠它。
+
+MTU（Maximum Transmission Unit）就是**一个网络接口上单个数据包最多能携带的字节数**。每个网卡都有一个 MTU 值：
+
+```bash
+ip link show    # 每个接口都有一行 mtu xxx
+```
+
+| 典型 MTU | 场景 |
+|---------|------|
+| 1500 | 以太网标准值（绝大多数服务器/交换机） |
+| 9000 | 巨型帧（jumbo frame），数据中心内网常用 |
+| 1280 | Tailscale 隧道接口（WireGuard 加密开销后） |
+| 1230 | flannel VXLAN 接口（1280 - 50 字节 VXLAN 头） |
+
+数据包超了 MTU 会怎样？想象数据包是货车，MTU 是桥的限高：超限的包要么被拆成两辆小车（IP 分片，但很多场景禁用），要么被直接丢弃并回一个 ICMP"包太大"消息——而 ICMP 经常被防火墙拦掉，发送方永远不知道，只能干等超时。
+
+**TCP 连接挂起（HTTP 000）就是这么来的**：包被悄悄丢掉，发送方等不到回应，一直重传一直丢。
+
 ### 第五步：对比 flannel 配置——发现 MTU 差异
 
 对比三个节点的 flannel.1 接口：
@@ -151,9 +172,19 @@ OCI free-arm-vm:       mtu 8950   ← 异常！
 
 OCI 节点的 flannel MTU 是 8950，其他两个是 1230。为什么？
 
-因为 OCI 的内网默认支持巨型帧（jumbo frame，物理网卡 MTU 9000），free-arm-vm 加入集群时，flannel 自动探测到本机物理网卡是 9000，于是把 flannel.1 设成了 8950（9000 - 50 字节 VXLAN 头）。而腾讯云和 NUC 的物理网卡是标准 MTU 1500，flannel 自动算成 1230。
+这里要澄清一下：**MTU 不是"链路定义的"，是 flannel 启动时自动算出来的**。推导逻辑是：
 
-VXLAN 封装后的大包（超过对端 1230 MTU）在链路上会被静默丢弃，TCP 连接直接挂起。当时觉得这就是根因了。
+```
+flannel 选定隧道接口 (--flannel-iface)
+    ↓ 读取该接口的 MTU
+tailscale0 MTU = 1280
+    ↓ 减去 VXLAN 封装头 50 字节
+flannel.1 MTU = 1230
+```
+
+腾讯云和 NUC 都是走 tailscale0 的，所以算出 1230。而 OCI 节点当时 flannel 选的是物理网卡 enp0s6——OCI 内网默认支持巨型帧，物理网卡 MTU 是 9000，于是 flannel.1 被算成 8950（9000 - 50）。
+
+问题就出在这：**free-arm-vm 按 8950 发包，而腾讯云节点的 flannel.1 接收上限是 1230**。VXLAN 封装后的大包在物理层被静默丢弃，TCP 连接直接挂起。当时觉得这就是根因了。
 
 ### 第六步：改 MTU——没用，还发现了更根本的问题
 
