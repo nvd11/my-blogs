@@ -106,6 +106,38 @@ spec:
 - `podAntiAffinity` + `topologyKey: kubernetes.io/hostname`：保证 3 个 pod 分布在不同节点，不会挤在一起
 - 注意：KIC 多副本时只有 leader 实际 watch K8s 写配置，其余 standby；配置同步后所有 proxy 数据面都生效
 
+**"一个 node 一个 pod"的两种实现方式**（效果相同，机制不同，二选一）：
+
+**方式 A：podAntiAffinity（硬性排他，推荐）** —— 语义就是"同一 hostname 不许有两个 kong pod"。上面示例用的就是这种方式，配合 `replicas: 3` 自然分散到 3 节点。核心就两行：
+
+```yaml
+        controller:
+          replicas: 3
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: kong
+                  topologyKey: kubernetes.io/hostname   # 按节点维度排他
+```
+
+**方式 B：topologySpreadConstraints（拓扑分布）** —— K8s 1.19+ 官方推荐的现代做法，`maxSkew: 1` 表示节点间 pod 数差异不超过 1：
+
+```yaml
+        controller:
+          replicas: 3
+          topologySpreadConstraints:                    # ← 替代 affinity 字段
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: DoNotSchedule
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: kong
+```
+
+**选择建议**：3 节点 3 副本这种"精确对等"场景用方式 A（硬性、直白、无中间态）；节点数多于副本数的弹性场景用方式 B（允许均匀分布但不卡死）。
+
 **预期效果**：
 
 ```
