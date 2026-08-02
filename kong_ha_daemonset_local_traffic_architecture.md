@@ -21,7 +21,7 @@
 原有的 Kong Ingress Controller 采用标准的 K8s `Deployment` 形态部署，仅设置了单个 Pod 副本，随机调度在腾讯云主节点上。当 OCI 节点或 NUC 节点的边缘入口收到外部请求时，Pod 内部流量必须强行通过跨节点叠加网络（Overlay Network）网回腾讯云节点上的单点 Kong Pod 进行代理，带来了显著的物理网络延迟开销。而且这个唯一的 Kong Pod 一旦挂了，整个集群的入口流量全部瘫痪。
 
 ### 2. `externalTrafficPolicy: Cluster` 导致的额外 SNAT 与源 IP 丢失
-Kong Proxy Service 的默认流量策略为 `Cluster`。在该模式下，当流量打入任意节点的 NodePort/LoadBalancer 时，Kube-proxy 会进行全局随机负载均衡。若请求打入 OCI 节点的入口，但后端端点在腾讯云节点，网络栈会强制进行源地址转换（SNAT）。这不仅增加了多余的内部网络跳数（Extra Network Hops），还导致后端服务无法感知客户端的真正物理 IP。
+Kong Proxy Service 的默认流量策略为 `Cluster`。在该模式下，svclb 收到流量后可能把请求转发到**其他节点**上的后端 Pod（通过集群内 iptables/overlay 规则做全局转发）。若请求打入 OCI 节点的入口，但后端端点在腾讯云节点，网络栈会强制进行源地址转换（SNAT）。这不仅增加了多余的内部网络跳数（Extra Network Hops），还导致后端服务无法感知客户端的真正物理 IP。
 
 ### 3. L7 代理局限与缺乏 L4 (TCP Stream) 传输能力
 默认的 Kong 部署仅启用了 HTTP/HTTPS (80/443) 端口代理。对于后续需要经由网关统一认证与审计的 Layer 4 流量（如 Redis 6379、MySQL 3306），现有网关未能开启 Nginx Stream 模块，缺乏 L4 TCP 流量透传能力。
@@ -32,6 +32,8 @@ Kong Proxy Service 的默认流量策略为 `Cluster`。在该模式下，当流
 
 ### 1. 改造前拓扑：单点集中 + 跨节点强制绕路
 
+> 说明：图中的入口组件是 **svclb（K3s 为 LoadBalancer Service 自动生成的 Kong LB DaemonSet pod）**，每个节点一个，监听 31850 端口，用 iptables DNAT 转发到 Kong Controller。不是 kube-proxy，也不是传统 NodePort。
+
 ```mermaid
 graph TD
     subgraph Clients ["外部客户端"]
@@ -41,33 +43,33 @@ graph TD
     end
 
     subgraph Node1 ["腾讯云节点 (vm-0-2-debian)"]
-        NP1["Kube-Proxy NodePort / LB"]
+        LB1["svclb (Kong LB DaemonSet Pod) <br/> 监听 :31850"]
         KongPod1["Kong Controller / Proxy Pod (1/1 独占副本)"]
         Svc1["Backend Service A"]
     end
 
     subgraph Node2 ["OCI ARM 节点 (free-arm-vm)"]
-        NP2["Kube-Proxy NodePort / LB"]
+        LB2["svclb (Kong LB DaemonSet Pod) <br/> 监听 :31850"]
         Svc2["Backend Service B"]
     end
 
     subgraph Node3 ["本地 NUC 节点 (nuc)"]
-        NP3["Kube-Proxy NodePort / LB"]
+        LB3["svclb (Kong LB DaemonSet Pod) <br/> 监听 :31850"]
     end
 
-    C1 ==>|HTTP 请求| NP1
-    C2 ==>|HTTP 请求| NP2
-    C3 ==>|HTTP 请求| NP3
+    C1 ==>|HTTP 请求| LB1
+    C2 ==>|HTTP 请求| LB2
+    C3 ==>|HTTP 请求| LB3
 
-    NP1 -->|本地转发| KongPod1
-    NP2 -.->|跨云跨节点 SNAT 流量绕路| KongPod1
-    NP3 -.->|跨网络隧道 SNAT 流量绕路| KongPod1
+    LB1 -->|本地 iptables DNAT| KongPod1
+    LB2 -.->|跨云跨节点流量绕路| KongPod1
+    LB3 -.->|跨网络隧道流量绕路| KongPod1
 
     KongPod1 -->|转发| Svc1
     KongPod1 -.->|跨节点转发| Svc2
 ```
 
-> **改造前隐患**：OCI 与 NUC 节点的进入流量必须跨网折返回腾讯云节点，不仅增加了可观的网络延迟，且当腾讯云上的单个 Kong Pod 发生 OOM 或被驱逐时，整个集群的入口流量瞬间瘫痪。
+> **改造前隐患**：svclb 收到流量后，如果后端 Kong Pod 不在本节点（单副本在腾讯云），流量必须跨网折返回腾讯云节点，不仅增加了可观的网络延迟，且当腾讯云上的单个 Kong Pod 发生 OOM 或被驱逐时，整个集群的入口流量瞬间瘫痪。
 
 ---
 
@@ -82,35 +84,35 @@ graph TD
     end
 
     subgraph Node1 ["腾讯云节点 (vm-0-2-debian)"]
-        NP1["Kube-Proxy Entry"]
+        LB1["svclb (Kong LB DaemonSet Pod) <br/> 监听 :31850"]
         KongDS1["Kong Pod #1 (DaemonSet) <br/> HTTP + L4 Stream:6379"]
         Svc1["Backend Service A"]
     end
 
     subgraph Node2 ["OCI ARM 节点 (free-arm-vm)"]
-        NP2["Kube-Proxy Entry"]
+        LB2["svclb (Kong LB DaemonSet Pod) <br/> 监听 :31850"]
         KongDS2["Kong Pod #2 (DaemonSet) <br/> HTTP + L4 Stream:6379"]
         Svc2["Backend Service B"]
     end
 
     subgraph Node3 ["本地 NUC 节点 (nuc)"]
-        NP3["Kube-Proxy Entry"]
+        LB3["svclb (Kong LB DaemonSet Pod) <br/> 监听 :31850"]
         KongDS3["Kong Pod #3 (DaemonSet) <br/> HTTP + L4 Stream:6379"]
     end
 
-    C1 ==>|HTTP / TCP| NP1
-    C2 ==>|HTTP / TCP| NP2
-    C3 ==>|HTTP / TCP| NP3
+    C1 ==>|HTTP / TCP| LB1
+    C2 ==>|HTTP / TCP| LB2
+    C3 ==>|HTTP / TCP| LB3
 
-    NP1 ==>|externalTrafficPolicy: Local <br/> 节点内部就近拦截| KongDS1
-    NP2 ==>|externalTrafficPolicy: Local <br/> 节点内部就近拦截| KongDS2
-    NP3 ==>|externalTrafficPolicy: Local <br/> 节点内部就近拦截| KongDS3
+    LB1 ==>|externalTrafficPolicy: Local <br/> 本节点 iptables 就近拦截| KongDS1
+    LB2 ==>|externalTrafficPolicy: Local <br/> 本节点 iptables 就近拦截| KongDS2
+    LB3 ==>|externalTrafficPolicy: Local <br/> 本节点 iptables 就近拦截| KongDS3
 
     KongDS1 -->|本地 Pod 路由| Svc1
     KongDS2 -->|本地 Pod 路由| Svc2
 ```
 
-> **改造后优势**：每个节点均运行独立的 Kong 实例；请求进入节点后直接在当前节点的 iptables 层被拦截并送入本地 Pod，实现了真正的**零跨节点网络损耗**与**真实源 IP 保留**。
+> **改造后优势**：每个节点均运行独立的 Kong 实例；svclb 收到流量后直接在本节点的 iptables 层拦截并送入本地 Kong Pod，实现了真正的**零跨节点网络损耗**与**真实源 IP 保留**。
 
 ---
 
