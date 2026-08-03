@@ -108,11 +108,17 @@ graph TD
     LB2 ==>|externalTrafficPolicy: Local <br/> 本节点 iptables 就近拦截| KongDS2
     LB3 ==>|externalTrafficPolicy: Local <br/> 本节点 iptables 就近拦截| KongDS3
 
-    KongDS1 -->|本地 Pod 路由| Svc1
-    KongDS2 -->|本地 Pod 路由| Svc2
+    KongDS1 -->|本地 Pod 路由 (零跳)| Svc1
+    KongDS1 -.->|跨节点代理 (overlay)| Svc2
+    KongDS2 -->|本地 Pod 路由 (零跳)| Svc2
+    KongDS2 -.->|跨节点代理 (overlay)| Svc1
+    KongDS3 -.->|跨节点代理 (overlay)| Svc1
+    KongDS3 -.->|跨节点代理 (overlay)| Svc2
 ```
 
-> **改造后优势**：每个节点均运行独立的 Kong Controller（DaemonSet）；svclb 收到流量后直接在本节点的 iptables 层拦截并送入本地 Kong Pod，实现了真正的**零跨节点网络损耗**与**真实源 IP 保留**。
+> **重要澄清（代理能力 vs 入口链路）**：`externalTrafficPolicy: Local` 只作用于 **svclb → Kong** 这一段入口链路——保证流量打到哪个节点，就由哪个节点的 Kong 就近接管，实现"入口零跨节点绕路"。但 **Kong → backend 这一段是集群全量视角**：每个 KIC Pod 都通过 Kubernetes API watch 到集群内**所有** Service 与 Endpoint，因此**任意节点的 Kong 都能代理任意节点的 backend Service**——本地有 backend 的走本节点 Pod 网络零跳直达（实线），本地没有的走 overlay 跨节点转发（虚线，功能不受限，只是多一跳网络开销）。NUC 节点虽然自身没有 backend 服务，它的 Kong 同样能代理 Svc1/Svc2。
+
+> **改造后优势**：每个节点均运行独立的 Kong Controller（DaemonSet）；svclb 收到流量后直接在本节点的 iptables 层拦截并送入本地 Kong Pod，实现了真正的**零跨节点网络损耗**与**真实源 IP 保留**。同时保留全集群代理能力，任意入口都能路由到任意 backend，单节点故障不影响其他节点的入口。
 
 ---
 
@@ -278,6 +284,8 @@ NUC Node: 307
 ```
 
 三个节点入口响应全部正常（307 重定向跟随后 200）。而且 NUC 入口的响应时间明显更短（0.02s vs 腾讯云 0.9s）——Local 策略下 NUC 的 svclb 直接找本节点 controller，零跨节点转发，这就是效果的直观体现。
+
+**顺带一个反证**：`/svc2` 是部署在 OCI 节点上的 Backend Service B，但腾讯云入口（`100.77.64.95:31850`）和 NUC 入口（`100.104.150.19:31850`）也能访问它——这说明**任意节点的 Kong 都在代理 OCI 的 backend**，正是图里"每个 KIC 全量代理所有节点 backend Service"的直接证据。`externalTrafficPolicy: Local` 约束的只是"流量进哪个节点的 Kong"，Kong 拿到请求后路由到哪个 backend 完全是集群全量视角，跟入口节点无关。
 
 ### 4.1 关键验证：Local 策略的"流量本地化"铁证
 
