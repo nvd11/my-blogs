@@ -108,12 +108,12 @@ graph TD
     LB2 ==>|externalTrafficPolicy: Local <br/> 本节点 iptables 就近拦截| KongDS2
     LB3 ==>|externalTrafficPolicy: Local <br/> 本节点 iptables 就近拦截| KongDS3
 
-    KongDS1 -->|本地 Pod 路由 (零跳)| Svc1
-    KongDS1 -.->|跨节点代理 (overlay)| Svc2
-    KongDS2 -->|本地 Pod 路由 (零跳)| Svc2
-    KongDS2 -.->|跨节点代理 (overlay)| Svc1
-    KongDS3 -.->|跨节点代理 (overlay)| Svc1
-    KongDS3 -.->|跨节点代理 (overlay)| Svc2
+    KongDS1 -->|本地零跳路由| Svc1
+    KongDS1 -.->|跨节点代理 overlay| Svc2
+    KongDS2 -->|本地零跳路由| Svc2
+    KongDS2 -.->|跨节点代理 overlay| Svc1
+    KongDS3 -.->|跨节点代理 overlay| Svc1
+    KongDS3 -.->|跨节点代理 overlay| Svc2
 ```
 
 > **重要澄清（代理能力 vs 入口链路）**：`externalTrafficPolicy: Local` 只作用于 **svclb → Kong** 这一段入口链路——保证流量打到哪个节点，就由哪个节点的 Kong 就近接管，实现"入口零跨节点绕路"。但 **Kong → backend 这一段是集群全量视角**：每个 KIC Pod 都通过 Kubernetes API watch 到集群内**所有** Service 与 Endpoint，因此**任意节点的 Kong 都能代理任意节点的 backend Service**——本地有 backend 的走本节点 Pod 网络零跳直达（实线），本地没有的走 overlay 跨节点转发（虚线，功能不受限，只是多一跳网络开销）。NUC 节点虽然自身没有 backend 服务，它的 Kong 同样能代理 Svc1/Svc2。
