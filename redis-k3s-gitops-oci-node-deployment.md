@@ -102,6 +102,49 @@ graph LR
 | 安全 | Redis 裸奔节点端口 | 网关层统一收口 |
 | 高可用 | 单节点，挂了就断 | 3 节点 Kong DaemonSet 都能转发 |
 
+### 直连 OCI VM 的安装思路（被放弃的方案）
+
+在定稿 Kong 方案之前，我认真想过**直连 OCI VM** 这条路：Redis 不进 K8s，直接在 free-arm-vm 上用 apt 或 Docker 装，监听节点 6379，客户端（LiteLLM）经 Tailscale 直连 `100.105.130.0:6379`。仓库里这套方案的痕迹现在还在：
+
+```
+redis-deployment/
+├── install.sh              ← apt 直装：装 redis-server + 应用规范化配置
+├── config/redis.conf       ← 持久化（appendonly）+ 安全配置
+├── docker-compose.yml      ← Docker 方案：redis:7.2-alpine + 挂载 + 密码 env
+├── docker-up.sh            ← Docker 方案启动脚本
+└── scripts/
+    ├── backup.sh           ← RDB/AOF 备份
+    ├── healthcheck.sh      ← redis-cli ping 健康检查
+    └── redisinsight.sh     ← 可视化工具部署
+```
+
+两种直装方式的形态：
+
+```
+【apt 直装】
+free-arm-vm 上 apt install redis-server
+  → systemd 管 redis 进程
+  → config/redis.conf 覆盖默认配置
+  → 监听 0.0.0.0:6379（Tailscale 网内可达）
+  → 客户端直连 100.105.130.0:6379
+
+【Docker Compose】
+free-arm-vm 上 docker compose up
+  → docker-compose.yml 定义 redis:7.2-alpine
+  → 端口映射 6379:6379（绑 Tailscale IP）
+  → 数据卷挂载本地磁盘
+  → 客户端同样直连 100.105.130.0:6379
+```
+
+**为什么最后放弃了这条路**：
+
+1. **和 K3s 抢占节点资源**：free-arm-vm 已经是 K3s worker，apt/docker 直装的 Redis 是"集群外的野进程"，不归 K8s 管，节点资源分配、重启策略都失控
+2. **没有自愈和探针**：Redis 挂了不会自动拉起来，没有 liveness/readiness
+3. **和 Kong 的端口冲突**：即使直装成功，Kong DaemonSet 的 6379 Stream 监听会和它抢端口（这是 K3s 方案也踩过的坑，直装方案同样躲不开）
+4. **GitOps 一致性**：整个集群都在 ArgoCD 管，单独留一台机器用脚本管 Redis 是开倒车
+
+但直连方案有个**无法否认的优点：网络路径最短**。客户端到 Redis 只有一跳（GCP → free-arm-vm 的 Tailscale 直连），而 K3s 方案里同节点也要过 Kong 那一层。这个差异到底有多大，值得实测——见后面"延迟对比测试"一节。
+
 ## 四、配置代码分布（重点）
 
 这套部署的配置分散在两个 Git 仓库里，职责划分很清晰，这是 GitOps 的典型形态。先看总览：
@@ -344,10 +387,61 @@ kubectl create secret generic redis-secret \
 
 部署完成后 6379 连接被 reset，最后定位到 svclb DaemonSet 没跟上 svc 的端口变更（详见另一篇《Redis 经 Kong Gateway 的流量路径与 svclb 端口失同步排障记》）。修复方式一句话：删掉 svclb DaemonSet 让它重建。
 
-## 七、经验总结
+## 七、延迟对比测试：直连 vs 经 Kong
+
+既然直连 OCI VM 的方案当初纠结过，那就用数据说话。测试环境：客户端在 GCP 伦敦的 VM（LiteLLM 所在，`tf-vpc0-subnet0-openclaw`），Redis 在 free-arm-vm。两个维度的测量：
+
+**测量一：经 3 个 Kong 入口的应用层延迟**（同连接连续发 100 次 `PING`，统计 RTT）
+
+```
+入口                   节点               min      avg      max      p50      p95
+─────────────────────────────────────────────────────────────────────────────
+100.105.130.0:6379   OCI free-arm-vm    165.82   166.03   166.57   166.03   166.16
+100.104.150.19:6379  nuc (本地)          278.89   287.24   541.13   281.04   287.03
+100.77.64.95:6379    腾讯云 vm-0-2      476.26   477.47   481.28   477.02   479.85
+```
+
+**测量二：ICMP 网络地板**（ping 3 个节点各 10 次）
+
+```
+100.105.130.0 (free-arm-vm)  min=165.40  avg=182.52  max=334.26
+100.104.150.19 (nuc)         min=226.06  avg=245.10  max=409.20
+100.77.64.95 (腾讯云)         min=247.39  avg=273.07  max=496.65
+```
+
+### 数据解读
+
+**1. 直连 ≈ 经 Kong（同节点入口），Kong 层的开销可以忽略**
+
+直连 OCI VM 的路径是 GCP → free-arm-vm 的 Tailscale 直连，理论上只有网络地板。而经 Kong 走 `100.105.130.0` 入口时，Redis pod 就在这个节点，流量是"同节点 svclb → 同节点 Kong → 同节点 redis"，Kong 透传的开销在微秒级。
+
+实测：经 Kong 的 `avg 166.03ms` 和 ICMP 的 `min 165.40ms` 几乎一样（甚至更稳）——**Kong 这一层没有带来可感知的延迟**。所以"直连 OCI VM 更快"的直觉在 free-arm-vm 入口上不成立，两种方式差距 <1ms。
+
+**2. 延迟差异全部来自"客户端到哪个入口节点"，不是架构选择**
+
+```
+free-arm-vm 入口: GCP → 新加坡直达                              ≈ 166ms
+nuc 入口:        GCP → 本地 + nuc → free-arm-vm (flannel 跨节点) ≈ 287ms
+腾讯云入口:      GCP → 大陆 + 腾讯云 → free-arm-vm (flannel)     ≈ 477ms
+```
+
+nuc 和腾讯云入口都叠加了第二段 WAN（入口节点 → free-arm-vm 的 flannel 隧道），腾讯云入口甚至接近两倍延迟。
+
+**3. 对客户端配置的结论**
+
+```
+最优: 100.105.130.0 (free-arm-vm)   ≈ 166ms  同节点直达，和直连无差别
+备选: 100.104.150.19 (nuc)          ≈ 287ms
+保底: 100.77.64.95 (腾讯云)         ≈ 477ms  仅当其他节点全挂
+```
+
+LiteLLM 配 `100.105.130.0` 就拿到了直连方案的延迟，同时还白赚了 K3s 的自愈、探针和 GitOps——**Kong 网关方案在延迟上无损，在运维上有增益**，这笔账是划算的。
+
+## 八、经验总结
 
 1. **有状态服务先定节点，再谈部署**：local-path 的 PV 绑定节点磁盘，pod 漂移等于数据丢失，nodeSelector 钉死是必须的。
 2. **配置分布的两层模型**：Application（部署到哪）和 Manifest（长什么样）分离，改节点调度只动 manifest，改目标集群只动 Application。
 3. **GitOps 的"最后一公里"是注册**：manifest 写好了不代表部署了，要让 App of Apps 发现它（加一个 Application 文件 + 推送）。
 4. **端口冲突提前算**：hostNetwork 直绑端口前，先确认集群里有没有别的组件占了同一端口（Kong 的 6379 就是个例子）。
 5. **Secret 占位符和 selfHeal 的配合坑**：manifest 里的占位符不一起改，改了 Secret 也会被 ArgoCD 拉回去。
+6. **网关层延迟焦虑要实测**：直连和经网关的差距往往在毫秒级甚至可忽略（同节点入口实测 <1ms），真正的延迟大头是客户端到入口节点的网络路径——先测再选，别靠直觉。
