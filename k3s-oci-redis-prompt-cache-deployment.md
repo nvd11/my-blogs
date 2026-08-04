@@ -6,7 +6,7 @@
 
 本文记录一次真实的跨云架构落地：我们将一台位于 OCI（Oracle Cloud Infrastructure）新加坡区域的 4C24G 永久免费 ARM 节点（`free-arm-vm`）加入现有 K3s 集群，并通过 Kubernetes 的 `nodeSelector` / `nodeAffinity` 与 K3s 原生 `local-path` 持久化存储，将 Redis 服务精准锚定在该节点上，作为 LiteLLM 的高可靠缓存基座。
 
-同时，针对 K3s 多节点集群中的网络转发损耗，本文重点阐述了**直连 OCI VM 的安装思路**，并附上了实测跨节点 LB 流量路径的延迟对比数据。
+同时，针对 K3s 多节点集群中的网络转发损耗，本文重点阐述了**直连 OCI VM 的安装思路**、**K8s Secret 密码解耦改造方案**，并附上了实测跨节点 LB 流量路径的延迟对比数据。
 
 ---
 
@@ -115,12 +115,28 @@ k8s-manifests/
 
 ---
 
-## 4. 核心配置文件与配置精解
+## 4. 核心配置文件与安全解耦改造
 
-### 4.1 Base 层配置
+### 4.1 密钥管理与 GitOps 零明文改造
+
+将数据库超级密码硬编码在 Git 仓库的 YAML 文件中是严重的安全隐患。我们通过 **Kubernetes Secret 动态注入** 来实现代码与密钥解耦：
+
+1. **带外创建或 GitOps 加密**：
+   在集群内部通过命令带外创建 Secret（或通过 SealedSecrets / SOPS 加密提交）：
+   ```bash
+   kubectl create secret generic redis-auth-secret \
+     --from-literal=redis-password='YourSuperSecretPassword2026!' \
+     -n redis-system
+   ```
+
+2. **Deployment 动态注入环境变量**：
+   容器启动命令使用 `env` 变量替换密码，既保留了配置文件中其他非敏感参数，又保证了 Git 提交零明文。
+
+---
+
+### 4.2 Base 层配置代码
 
 #### ConfigMap (`base/redis-configmap.yaml`)
-为 Redis 定制内存淘汰策略与持久化机制：
 
 ```yaml
 apiVersion: v1
@@ -132,7 +148,7 @@ data:
   redis.conf: |
     # 绑定所有网卡，接受 Pod 内部与 Tailscale 网格请求
     bind 0.0.0.0
-    protected-mode no
+    protected-mode yes
     port 6379
     tcp-backlog 511
     timeout 0
@@ -159,7 +175,6 @@ data:
 ```
 
 #### PVC (`base/redis-pvc.yaml`)
-申请使用 K3s 默认的 `local-path` 存储类：
 
 ```yaml
 apiVersion: v1
@@ -177,7 +192,7 @@ spec:
 ```
 
 #### Deployment (`base/redis-deployment.yaml`)
-定义基础 Redis Pod，配置存储挂载与健康检查探针：
+通过 `env.valueFrom.secretKeyRef` 引入密码，并在启动命令中追加 `--requirepass "$REDIS_PASSWORD"`：
 
 ```yaml
 apiVersion: apps/v1
@@ -204,8 +219,16 @@ spec:
         - name: redis
           image: redis:7.2-alpine
           command:
-            - redis-server
-            - /usr/local/etc/redis/redis.conf
+            - sh
+            - -c
+            - |
+              exec redis-server /usr/local/etc/redis/redis.conf --requirepass "$REDIS_PASSWORD"
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-auth-secret
+                  key: redis-password
           ports:
             - containerPort: 6379
               name: redis
@@ -219,15 +242,17 @@ spec:
           livenessProbe:
             exec:
               command:
-                - redis-cli
-                - ping
+                - sh
+                - -c
+                - redis-cli -a "$REDIS_PASSWORD" ping
             initialDelaySeconds: 15
             periodSeconds: 10
           readinessProbe:
             exec:
               command:
-                - redis-cli
-                - ping
+                - sh
+                - -c
+                - redis-cli -a "$REDIS_PASSWORD" ping
             initialDelaySeconds: 5
             periodSeconds: 5
           volumeMounts:
@@ -266,10 +291,9 @@ spec:
 
 ---
 
-### 4.2 Production Overlay 层配置
+### 4.3 Production Overlay 层配置
 
 #### 节点定向补丁 (`overlays/production/node-affinity-patch.yaml`)
-通过 `nodeAffinity` 结合自定义 Node Label，硬性约束 Redis Pod 只能调度至 OCI 节点 `free-arm-vm`：
 
 ```yaml
 apiVersion: apps/v1
@@ -280,7 +304,6 @@ metadata:
 spec:
   template:
     spec:
-      # 使用 nodeAffinity 进行节点精准锚定
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -294,7 +317,6 @@ spec:
                     operator: In
                     values:
                       - oci-arm
-      # 针对 OCI ARM 节点的架构兼容约束
       tolerations:
         - key: "arch"
           operator: "Equal"
@@ -302,85 +324,45 @@ spec:
           effect: "NoSchedule"
 ```
 
-#### Overlay Kustomization (`overlays/production/kustomization.yaml`)
-
-```yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-
-namespace: redis-system
-
-resources:
-  - ../../base
-
-patches:
-  - path: node-affinity-patch.yaml
-```
-
 ---
 
 ## 5. 部署落地与实测验证
 
-### Step 1: 给 OCI Node 标记特征标签
-
-在集群 Control Plane 执行命令，打上标记：
-
-```bash
-# 检查现有节点状态
-kubectl get nodes -o wide
-
-# 为 OCI 节点添加节点类型标签
-kubectl label node free-arm-vm topology.kubernetes.io/node-type=oci-arm --overwrite
-
-# 验证标签应用情况
-kubectl get node free-arm-vm --show-labels
-```
-
-### Step 2: 应用 Kustomize 配置
+### Step 1: 创建命名空间与安全 Secret
 
 ```bash
 # 创建命名空间
 kubectl create namespace redis-system --dry-run=client -o yaml | kubectl apply -f -
 
-# 部署生产配置
+# 带外创建数据库密码 Secret（避免存入 Git 仓库）
+kubectl create secret generic redis-auth-secret \
+  --from-literal=redis-password='YourSuperSecretPassword2026!' \
+  -n redis-system
+```
+
+### Step 2: 给 OCI Node 标记特征标签并应用部署
+
+```bash
+# 为 OCI 节点添加节点类型标签
+kubectl label node free-arm-vm topology.kubernetes.io/node-type=oci-arm --overwrite
+
+# 部署生产 Kustomize 配置
 kubectl apply -k k8s-manifests/apps/redis-llm-cache/overlays/production
 ```
 
-### Step 3: 验证 Pod 调度与存储绑定
-
-检查 Pod 是否准确落盘在 OCI 节点，并且 PVC 成功绑定：
+### Step 3: 验证 Pod 状态与带密健康检查
 
 ```bash
-# 查看 Pod 所在节点
+# 查看 Pod 运行状态与落盘节点
 kubectl get pods -n redis-system -o wide
-# 输出预期包含: NODE: free-arm-vm
 
-# 检查 PV 与 Local-Path 绑定情况
-kubectl get pvc -n redis-system
-kubectl describe pv -n redis-system
-```
-
-在 OCI 节点物理机上直接核实持久化路径：
-
-```bash
-# 登录 OCI 节点查看 local-path 创建的物理目录
-ssh free-arm-vm "ls -la /var/lib/rancher/k3s/storage/pvc-*"
-```
-
-### Step 4: 跨网络读写与性能测试
-
-在 GCP 节点的 LiteLLM 所在环境进行跨节点 Redis 读写测试：
-
-```bash
-# 获取 Redis Service ClusterIP 或在网格内直接测试
+# 校验带密码的客户端连通性
 REDIS_IP=$(kubectl get svc redis-service -n redis-system -o jsonpath='{.spec.clusterIP}')
+REDIS_PASS=$(kubectl get secret redis-auth-secret -n redis-system -o jsonpath='{.data.redis-password}' | base64 -d)
 
-# 写入大型测试 Key
-kubectl run redis-test --rm -i --tty --image=redis:7.2-alpine -- redis-cli -h $REDIS_IP PING
-
-# 模拟 LiteLLM Prompt Cache 写入与读取
-kubectl run redis-test --rm -i --tty --image=redis:7.2-alpine -- redis-cli -h $REDIS_IP SET litellm:cache:prompt_hash_001 "response_data_chunk_sample"
-kubectl run redis-test --rm -i --tty --image=redis:7.2-alpine -- redis-cli -h $REDIS_IP GET litellm:cache:prompt_hash_001
+# 发起认证测试
+kubectl run redis-test --rm -i --tty --image=redis:7.2-alpine -- \
+  redis-cli -h $REDIS_IP -a "$REDIS_PASS" PING
 ```
 
 ---
