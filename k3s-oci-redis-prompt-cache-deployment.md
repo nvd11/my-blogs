@@ -6,13 +6,23 @@
 
 本文记录一次真实的跨云架构落地：我们将一台位于 OCI（Oracle Cloud Infrastructure）新加坡区域的 4C24G 永久免费 ARM 节点（`free-arm-vm`）加入现有 K3s 集群，并通过 Kubernetes 的 `nodeSelector` / `nodeAffinity` 与 K3s 原生 `local-path` 持久化存储，将 Redis 服务精准锚定在该节点上，作为 LiteLLM 的高可靠缓存基座。
 
+同时，针对 K3s 多节点集群中的网络转发损耗，本文重点阐述了**直连 OCI VM 的安装思路**，并附上了实测跨节点 LB 流量路径的延迟对比数据。
+
 ---
 
-## 1. 整体架构设计与延迟推演
+## 1. 整体架构设计与直连 OCI 节点思路
 
-### 1.1 跨云拓扑与流量路径
+### 1.1 为什么选择“直连 OCI VM”设计思路
 
-LiteLLM 网关跑在 GCP 节点，而 Redis 部署在 OCI 新加坡节点。两端节点通过 **Tailscale Mesh VPN** 打通内网（Overlay Network），跨云 Pod 直接通过 Tailscale IP / ClusterIP 进行通信。
+在 K3s 集群中，默认的 Service LoadBalancer (`svclb-k3s`) 会以 DaemonSet 形式在所有节点上运行入口 Pod。如果客户端（GCP 上的 LiteLLM）随机选择一个 K3s 节点 IP 作为 Redis 入口，Kubernetes 的 `kube-proxy` / `flannel` 可能会将请求跨网二次转发给真正的 Pod 所在节点。
+
+*   **传统多跳路由灾难**：如果流量从 GCP 发往腾讯云节点（Control Plane），再由 `kube-proxy` 转发给 OCI 节点上的 Redis Pod，数据包将在跨云叠加链路上进行多次折返（GCP ➔ 腾讯云 ➔ OCI ➔ 腾讯云 ➔ GCP），导致延迟成倍暴涨。
+*   **直连（Direct Path）思路**：
+    1. 通过 `nodeAffinity` 将 Redis Pod 强绑定在 OCI ARM 节点 (`free-arm-vm`)。
+    2. 配置 LiteLLM 客户端直接指定 OCI 节点的 Tailscale 内网 IP（`100.105.130.0`）及 NodePort / Direct ClusterIP。
+    3. 流量直接由 GCP 通过 Tailscale 加密隧道一跳直达 OCI 节点本地 Pod，将跨网交互限制为**有且仅有 1 次**必要的物理跨云 RTT。
+
+### 1.2 跨云拓扑与流量路径
 
 ```mermaid
 flowchart TB
@@ -21,9 +31,14 @@ flowchart TB
     end
 
     subgraph TailscaleNet["🔒 Tailscale Mesh Overlay (100.x.x.x)"]
-        TSGCP["GCP Tailscale Node"]
-        TSOCI["OCI Tailscale Node"]
-        TSGCP <-->|"Encrypted WireGuard Tunnel<br/>RTT ~170ms"| TSOCI
+        TSGCP["GCP Tailscale Node<br/>(100.94.13.17)"]
+        TSOCI["OCI Tailscale Node<br/>(100.105.130.0)"]
+        TSTencent["Tencent Tailscale Node<br/>(100.77.64.95)"]
+        TSNUC["NUC Tailscale Node<br/>(100.104.150.19)"]
+        
+        TSGCP ==>|"✅ 直连路径: 166ms RTT (推荐)"| TSOCI
+        TSGCP -.-|"❌ 绕路跳跃: 708ms RTT"| TSTencent
+        TSGCP -.-|"❌ 折返跳跃: 324ms RTT"| TSNUC
     end
 
     subgraph OCI["☁️ OCI 新加坡节点 (free-arm-vm, 4C24G ARM)"]
@@ -31,29 +46,50 @@ flowchart TB
         
         subgraph K3sPodSpace["K3s Pod Space"]
             RedisPod["Redis Pod<br/>(Targeted to OCI Node)"]
-            RedisSvc["Service: redis-service<br/>(ClusterIP: 6379)"]
+            RedisSvc["Service: redis-service<br/>(NodePort / ClusterIP: 6379)"]
         end
         
         LocalStorage["Local Path Provisioner<br/>(/var/lib/rancher/k3s/storage/<pvc-id>)"]
     end
 
-    LiteLLM -->|"1. 查缓存 / 写入缓存"| TSGCP
-    TSOCI --> RedisSvc
-    RedisSvc --> RedisPod
-    RedisPod -->|"2. RDB/AOF 落盘持久化"| LocalStorage
+    LiteLLM --> TSGCP
+    TSOCI --> RedisSvc --> RedisPod
+    RedisPod -->|"RDB/AOF 落盘持久化"| LocalStorage
+    TSTencent -.->|"Kube-Proxy 跨节点转发"| TSOCI
+    TSNUC -.->|"Kube-Proxy 跨节点转发"| TSOCI
 ```
 
-### 1.2 跨地域网络延迟的现实权衡
+### 1.3 跨地域网络延迟与收益计算
 
-*   **跨网 RTT**：GCP 与 OCI 新加坡之间的 Tailscale 隧道 RTT 约在 **160ms ~ 170ms** 左右。
+*   **跨网 RTT**：GCP 与 OCI 新加坡之间的 Tailscale 隧道物理 RTT 稳定在 **165ms ~ 166ms** 左右。
 *   **收益对比**：
-    *   **Cache Miss（未命中）**：额外增加 170ms 查 Redis 开销，但在 LLM 动辄 2000ms ~ 8000ms 的推理首字延迟面前，170ms 几乎完全感知不到。
-    *   **Cache Hit（命中）**：直接返回 Redis 里的 Prompt 结果，耗时仅 170ms，瞬间节省 **2~10 秒**的推理等待时间，并实现 **100% Token 零计费**。
+    *   **Cache Miss（未命中）**：额外增加 166ms 查 Redis 开销，但在 LLM 动辄 2000ms ~ 8000ms 的推理首字延迟面前，166ms 几乎完全感知不到。
+    *   **Cache Hit（命中）**：直接返回 Redis 里的 Prompt 结果，耗时仅 166ms，瞬间节省 **2~10 秒**的推理等待时间，并实现 **100% Token 零计费**。
 *   **内存与持久化断层优势**：OCI 提供的 24GB 内存为 Redis 提供了充裕的 LRU 缓存空间，搭配 `local-path` 将持久化数据写入 OCI 本地 NVMe/SSD，规避了云盘卷跨云挂载的复杂性。
 
 ---
 
-## 2. GitOps 配置代码目录分布
+## 2. 三节点 LB 入口跨网延操对比实测
+
+为了验证“直连 OCI VM”与“经由其他 K3s 节点转发”对延迟的具体影响，我们从 GCP 节点（`Alice`）向集群内 3 个节点的 LB / Redis 端口发起实时 TCP 与 Redis RESP 协议 PING 压测，实测数据如下：
+
+### 2.1 延时对比数据汇总
+
+| 流量接入点 (LB Node Entry) | 物理节点类型 | Tailscale 内网 IP | TCP 6379 建连延时 | Redis PING 响应 (RTT) | 相对直连额外损耗 | 链路路由特征 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **直连 OCI 节点 (推荐)** | OCI 4C24G ARM | `100.105.130.0` | **165.79 ms** | **166.34 ms** | **0 ms (基准)** | **单次物理跨云**，本地 Pod 响应，极低抖动 |
+| **经由 本地 NUC 节点** | Home NUC Worker | `100.104.150.19` | 218.85 ms | **323.97 ms** | **+157.63 ms** | GCP ➔ 家庭宽带 ➔ Flannel 转发 ➔ OCI |
+| **经由 腾讯云 节点** | Tencent Control Plane | `100.77.64.95` | 248.46 ms | **708.14 ms** | **+541.80 ms** | GCP ➔ 腾讯云 ➔ 双重 Overlay 转发 ➔ OCI |
+
+### 2.2 数据分析与结论
+
+1. **直连 OCI 节点 (`166.34 ms`)**：请求到达 OCI 节点后，通过本地 Linux bridge/iptables 直接送达本地 Pod，波动标准差 `< 0.5ms`，是理论上的最低延时界限。
+2. **经 NUC 节点转发 (`323.97 ms`)**：产生了二次折返。流量先跨国连入家庭局域网 NUC，再通过集群 CNI 转发到 OCI，叠加了家庭宽带穿透与中继开销。
+3. **经 腾讯云 节点转发 (`708.14 ms`)**：延时暴涨近 **540ms**！原因在于跨国公网路由叠加了多重 `kube-proxy` 封包解包开销，如果高频 Prompt 缓存走此入口，缓存收益将被严重侵蚀。
+
+---
+
+## 3. GitOps 配置代码目录分布
 
 为符合基础设施即代码（IaC）与 GitOps 规范，配置文件在代码仓库中按照 Base / Overlay 的结构进行拆分：
 
@@ -79,9 +115,9 @@ k8s-manifests/
 
 ---
 
-## 3. 核心配置文件与配置精解
+## 4. 核心配置文件与配置精解
 
-### 3.1 Base 层配置
+### 4.1 Base 层配置
 
 #### ConfigMap (`base/redis-configmap.yaml`)
 为 Redis 定制内存淘汰策略与持久化机制：
@@ -230,7 +266,7 @@ spec:
 
 ---
 
-### 3.2 Production Overlay 层配置
+### 4.2 Production Overlay 层配置
 
 #### 节点定向补丁 (`overlays/production/node-affinity-patch.yaml`)
 通过 `nodeAffinity` 结合自定义 Node Label，硬性约束 Redis Pod 只能调度至 OCI 节点 `free-arm-vm`：
@@ -244,7 +280,7 @@ metadata:
 spec:
   template:
     spec:
-      # 方案 1：优先使用 nodeAffinity 进行节点约束
+      # 使用 nodeAffinity 进行节点精准锚定
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -283,7 +319,7 @@ patches:
 
 ---
 
-## 4. 部署落地与实测验证
+## 5. 部署落地与实测验证
 
 ### Step 1: 给 OCI Node 标记特征标签
 
@@ -349,7 +385,7 @@ kubectl run redis-test --rm -i --tty --image=redis:7.2-alpine -- redis-cli -h $R
 
 ---
 
-## 5. 运维踩坑与性能调优总结
+## 6. 运维踩坑与性能调优总结
 
 1. **内存使用防 OOM 机制**：
    * OCI 机器虽然有 24G 内存，但必须为 Linux OS、K3s Agent 以及 Tailscale 进程预留 4G~6G 缓冲区。
