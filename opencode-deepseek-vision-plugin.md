@@ -138,4 +138,183 @@ try {
 
 **在怪工具之前，先想想是不是自己写的东西在里面捣乱。**
 
-插件最终版我放在 `~/.config/opencode/plugins/vision-translator.ts`，整个过程用到的教训都在注释里写清楚了。如果哪天你也遇到了"消息发不出去"的诡异现象，记得先检查一下自己的插件 hook 是不是同步阻塞了消息管道——这个坑，我已经替你踩过了。
+如果哪天你也遇到了"消息发不出去"的诡异现象，记得先检查一下自己的插件 hook 是不是同步阻塞了消息管道——这个坑，我已经替你踩过了。
+
+## 附：完整插件源码
+
+插件整个就一个文件 `vision-translator.ts`，放到 `~/.config/opencode/plugins/`（注意是复数！）重启 opencode 就能用。API Key 优先读环境变量 `QWEN_API_KEY` / `DASHSCOPE_API_KEY`，没有的话会回退到 `~/.config/opencode/.env.local` 这个被 gitignore 保护的文件里读，格式就是一行 `QWEN_API_KEY=sk-xxx`：
+
+```ts
+/**
+ * vision-translator plugin
+ * --------------------------
+ * 为纯文本模型（如 deepseek-v4-flash）提供"图片预分析"能力：
+ * 用户发送图片 → 调用 DashScope qwen3-vl-flash 视觉模型 → 转成文字描述 → 主模型"读"描述。
+ *
+ * API Key 读取优先级（绝不硬编码）：
+ *   1. 环境变量 QWEN_API_KEY
+ *   2. 环境变量 DASHSCOPE_API_KEY
+ *   3. 回退到 gitignored 安全文件 ~/.config/opencode/.env.local
+ *   若均缺失 → 保留原图片 part，不阻塞用户。
+ *
+ * ⚠️ 2026-08-06 修复记录：
+ *   - 目录：~/.config/opencode/plugin/（单数，opencode 不识别）→ plugins/（复数，官方要求）
+ *   - Bug：getApiKey 曾用 `await import()` 但函数未声明 async，导致 SyntaxError 加载失败
+ *          现改为顶部静态导入 node:fs/os/path，getApiKey 恢复同步函数。
+ *   - 方案A+B（消息丢失修复）：
+ *     A. DashScope 调用加 AbortController 超时熔断（60s），超时快速降级，绝不阻塞消息管道；
+ *     B. hook 从 chat.message 改为 experimental.chat.messages.transform
+ *        （在消息即将发给 LLM 前才转换图片），避免同步 await 网络请求卡死消息处理。
+ */
+
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { Plugin } from "@opencode-ai/plugin";
+
+const DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+const VISION_MODEL = "qwen3-vl-flash";
+const DASHSCOPE_TIMEOUT_MS = 60_000;
+
+function getApiKey(): string | undefined {
+  // 1. 环境变量优先
+  if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
+    return process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY;
+  }
+  // 2. 回退到本地 gitignored 安全文件（~/.config/opencode/.env.local）
+  try {
+    const envFile = join(homedir(), ".config/opencode/.env.local");
+    if (existsSync(envFile)) {
+      const content = readFileSync(envFile, "utf8");
+      const m = content.match(/^QWEN_API_KEY=(.+)$/m);
+      if (m) return m[1].trim();
+    }
+  } catch {
+    // 文件读取失败则忽略，交给上层处理
+  }
+  return undefined;
+}
+
+/** 图片描述缓存：避免同一图片重复调用视觉 API */
+const descriptionCache = new Map<string, string>();
+
+/**
+ * 调用 DashScope 视觉模型分析图片。
+ * 带 60s 超时熔断：DashScope 响应慢时立即 abort，快速降级返回错误信息，
+ * 避免网络请求无限阻塞 opencode 的消息处理管道。
+ */
+async function analyzeImage(dataUrl: string): Promise<string> {
+  const cached = descriptionCache.get(dataUrl);
+  if (cached) return cached;
+
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error("QWEN_API_KEY / DASHSCOPE_API_KEY 未配置");
+  }
+
+  // 超时熔断器
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DASHSCOPE_TIMEOUT_MS);
+
+  try {
+    const resp = await fetch(`${DASHSCOPE_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: VISION_MODEL,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "image_url", image_url: { url: dataUrl } },
+              {
+                type: "text",
+                text: "请详细描述这张图片的内容，包括画面主体、文字、图表、界面元素、颜色布局等所有可辨识的细节，用中文回答。",
+              },
+            ],
+          },
+        ],
+      }),
+      signal: controller.signal,
+    });
+
+    if (!resp.ok) {
+      const errBody = await resp.text();
+      throw new Error(`DashScope API ${resp.status}: ${errBody.slice(0, 300)}`);
+    }
+
+    const data = (await resp.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const description =
+      data?.choices?.[0]?.message?.content || "(图片描述为空)";
+    descriptionCache.set(dataUrl, description);
+    return description;
+  } catch (e) {
+    if (controller.signal.aborted) {
+      throw new Error(`DashScope 分析超时（>${DASHSCOPE_TIMEOUT_MS / 1000}s）`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 转换单条消息里的图片 part 为文字描述（替换而非追加，模型只"读"文字） */
+async function translateParts(parts: Array<Record<string, any>>): Promise<void> {
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    // 只处理"图片"类型的文件 part（mime 以 image/ 开头且为 data URL）
+    if (
+      part?.type === "file" &&
+      part.mime?.startsWith("image/") &&
+      part.url?.startsWith("data:")
+    ) {
+      try {
+        const description = await analyzeImage(part.url);
+        parts[i] = {
+          id: part.id,
+          sessionID: part.sessionID,
+          messageID: part.messageID,
+          type: "text",
+          synthetic: true,
+          text: `[图片预分析 - ${part.filename || "image"}] ${description}`,
+        };
+      } catch (e) {
+        console.error("[vision-translator] 图片解析失败:", e);
+        // 解析失败时降级为文本占位，绝不让原始图片卡住纯文本模型
+        parts[i] = {
+          id: part.id,
+          sessionID: part.sessionID,
+          messageID: part.messageID,
+          type: "text",
+          synthetic: true,
+          text: `[图片解析失败：${(e as Error).message}]（图片已降级为占位文本）`,
+        };
+      }
+    }
+  }
+}
+
+export const VisionTranslatorPlugin: Plugin = async () => {
+  return {
+    /**
+     * 在消息即将发送给 LLM 前转换图片 → 文字。
+     * 相比 chat.message：此处转换不影响消息的入库/显示/发送流程，
+     * 只会让"回复生成"稍等分析完成；即使超时也走降级路径，消息绝不丢失。
+     */
+    "experimental.chat.messages.transform": async (_input, output) => {
+      for (const msg of output.messages) {
+        if (msg?.parts && Array.isArray(msg.parts)) {
+          await translateParts(msg.parts);
+        }
+      }
+    },
+  };
+};
+```
+
+<p align="center">—— 完 ——</p>
