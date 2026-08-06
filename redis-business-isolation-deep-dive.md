@@ -220,6 +220,8 @@ redis-cli -n 1 EXISTS scriptkey   # (integer) 1
 
 这跟我记忆里的"SELECT is not allowed in script"完全相反——至少在 Redis 7.x 上，脚本里 SELECT 是合法的，执行后连接还停在切过去的 db。所以"跨 db 做不了原子操作"这条**不成立**，我之前的说法是错的。多 db 的坑很多，但这条不算。
 
+顺带再补一个查证：网上有传言说 Redis 8 引入了类似"表/字典"的命名空间特性，我特意翻了 redis/redis 仓库 8.0 分支的 `00-RELEASENOTES`——8.0 的新特性是搜索索引、vector sets、I/O 多线程这些，没有任何表/字典命名空间的东西。**"没有表"这个心智模型，在最新版里依然成立。**
+
 ---
 
 ## 五、 大公司生产环境里，到底怎么选
