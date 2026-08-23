@@ -6,7 +6,7 @@
 1. **严格具备“终身永久免费（Always Free）”属性**，而非 30~90 天后自动按原价扣费的体验期产品；
 2. **底层具备真实生产级算力与可靠性**，能够通过标准网络协议（TCP/HTTP/WireGuard）融入统一的多云架构。
 
-本文基于实测网络拓扑与生产环境配置，将全球主流云厂商（AWS、GCP、Azure、Oracle Cloud、IBM Cloud、Cloudflare、阿里云、腾讯云、华为云及头部云原生独立服务商）的免费资源按计算、无服务器容器、数据库、消息流、存储与网络分门别类深度剖析，并提供无缝避坑与架构组合方案。
+本文基于实测网络拓扑与生产环境配置，将全球主流云厂商（AWS、GCP、Azure、Oracle Cloud、IBM Cloud、Cloudflare、阿里云、腾讯云、华为云及头部云原生独立服务商）的免费资源按计算、无服务器容器、数据库、消息流、对象存储、容器镜像托管（Docker Registry）与网络分门别类深度剖析，并提供无缝避坑与架构组合方案。
 
 ---
 
@@ -165,19 +165,18 @@ graph TD
 
 ---
 
-## 6. 对象存储、容器镜像与 CDN 分发（Storage & Registry）
+## 6. 对象存储与 CDN 边缘分发（Object Storage & CDN）
 
 ```mermaid
 flowchart TD
-    Client["终端访客 / Kubernetes 节点"] --> CDN["CDN / 边缘分发层"]
+    Client["终端访客 / 外部调用端"] --> CDN["CDN / 边缘分发层"]
     CDN -->|"境内加速: 100GB/月 免费"| EO["腾讯云 EdgeOne"]
     CDN -->|"全球托管: 无限流量"| CFP["Cloudflare Pages"]
     
-    subgraph Storage["对象存储与镜像仓库"]
+    subgraph Storage["对象存储 (Object Storage)"]
         R2["Cloudflare R2<br/>10GB 存储 · 永久 0 出站流量费"]
         IBM_COS["IBM Cloud Object Storage<br/>25GB 存储 · 兼容 S3 · 免绑卡"]
         GCS["GCP Cloud Storage<br/>5GB 标准存储 (美区)"]
-        ACR["阿里云 ACR 个人版<br/>无限量私有 Docker 镜像托管"]
     end
     
     EO & CFP --> R2
@@ -192,13 +191,48 @@ flowchart TD
   - 协议标准：100% 兼容 AWS S3 API，直接使用标准 S3 客户端（Boto3/rclone）即可无缝对接。
 * **Google Cloud Storage (GCS)**：每月赠送 **5 GB** 标准存储（需限定在美区机房），5000 次写入与 50,000 次读取。
 
-### 6.2 容器镜像与 CDN 基础设施
-* **阿里云 ACR（个人版）**：**终身免费无限容量**。提供最多 3 个命名空间与 300 个镜像仓库，支持绑定 GitHub 自动化进行多架构（x86/ARM64）云端构建与内网高速拉取。
+### 6.2 CDN 与边缘加速
 * **腾讯云 EdgeOne（边缘安全加速平台）**：个人基础版永久免费。每月提供 **100 GB 全球 CDN 加速流量**，集成免费基础 DDoS 防护、WAF 规则与自定义边缘规则引擎。
+* **Cloudflare Pages**：提供无限量静态/全栈 Web 流量托管，每月赠送 500 次 Git Push 自动化构建。
 
 ---
 
-## 7. 大模型（LLM）与 AI 认知服务
+## 7. 容器镜像托管与分发注册表（Container Registries / Docker Hubs）
+
+在云原生与 GitOps 持续交付中，安全、高速且不限容量的 Docker 镜像托管仓库是不可或缺的关键环节。许多公有云和代码平台为开发者提供了极其慷慨的免费镜像存储方案。
+
+```mermaid
+flowchart LR
+    CI["GitOps / CI/CD (GitHub Actions / GitLab)"] -->|"docker push"| Reg["容器镜像托管矩阵"]
+    
+    subgraph Registries["全球终身免费容器镜像仓库"]
+        ACR["阿里云 ACR (个人版)<br/>🟢 终身无限容量 · 300仓库 · 云端多架构自动构建"]
+        GHCR["GitHub Packages (ghcr.io)<br/>🟢 公开镜像无限 · 私有 500MB · Actions 原生对接"]
+        TCR["腾讯云 TCR (个人版)<br/>🟢 终身免费 · 广州/上海内网极速拉取"]
+        SWR["华为云 SWR<br/>🟢 个人版永久免费 · 专线拉取"]
+        Quay["Red Hat Quay.io<br/>🟢 无限公开仓库 · 内置 Clair 安全漏洞扫描"]
+        AWS_ECR["AWS ECR Public<br/>🟢 50GB 存储 · 500GB 出站流量/月"]
+    end
+    
+    Reg --> ACR & GHCR & TCR & SWR & Quay & AWS_ECR
+```
+
+### 7.1 全球主流免费容器镜像仓库横向对比
+
+| 镜像托管服务 | 免费配额与存储策略 | 访问速度与网络优势 | 核心特色与架构推荐 |
+| :--- | :--- | :--- | :--- |
+| **🟢 阿里云 ACR (个人版)** | **终身永久免费，无限存储容量！**<br>支持 3 个命名空间，最多 300 个镜像仓库。 | 国内公网与阿里云内网极速拉取，无被墙与限速问题。 | **全网最强生产力**。支持绑定 GitHub 源码库，代码 Push 后**免费在云端构建 multi-arch (x86/ARM64) 镜像**，彻底避免本地机器编译耗时。 |
+| **🟢 GitHub Container Registry (ghcr.io)** | **公开镜像完全无限量免费！**<br>私有镜像每月 500 MB 存储 + 1 GB 出站流量。 | 全球 CDN 分发极速，境外服务器拉取体验极佳。 | **开源项目首选**。与 GitHub Actions (`docker/build-push-action`) 无缝集成，支持基于 PAT 或 GITHUB_TOKEN 零配置鉴权。 |
+| **🟢 腾讯云 TCR (个人版)** | **终身永久免费托管！** | 腾讯云国内 CVM / Lighthouse / K3s 节点内网专线秒级拉取。 | 适合配合腾讯云轻量服务器或 K3s 业务节点部署私有微服务镜像。 |
+| **🟢 华为云 SWR (容器镜像服务)** | **个人版永久免费**。 | 华为云全区域内网高速免流拉取。 | 适合配合 FunctionGraph 自定义镜像容器或华为云 ECS 节点使用。 |
+| **🟢 Red Hat Quay.io** | **无限量免费公开镜像仓库**。 | 全球高可用分发。 | 内置 **Clair 漏洞自动化安全扫描**，在镜像 Push 后自动生成 CVE 缺陷分析报告。 |
+| **🟢 AWS ECR Public** | **每月 50 GB 免费存储** + **500 GB 全球免费出站流量**。 | AWS 全球骨干网络加速分发。 | 适合对外公开分发中大型开源工具容器镜像。 |
+| **🟢 Docker Hub (官方注册表)** | **无限量公开镜像仓库** + 1 个免费私有仓库。 | 国际标准入口，国内部分地区可能受解析限制。 | 默认 Docker CLI 缺省注册表，免认证用户每 6 小时限 100 次 Pull（认证用户 200 次）。 |
+| **🟢 IBM Cloud Container Registry (ICR)** | **Lite 计划：500 MB 免费存储 + 5 GB 每月流量**。 | IBM Cloud 内网直通。 | 内置 **Vulnerability Advisor（漏洞顾问）**，自动检测镜像配置违规与潜在安全漏洞。 |
+
+---
+
+## 8. 大模型（LLM）与 AI 认知服务
 
 现代工程架构中，调用大模型提取结构化数据或进行语义搜索已成为标配基础设施。
 
@@ -232,7 +266,7 @@ flowchart LR
 
 ---
 
-## 8. 网络穿透、DNS、域名与安全证书
+## 9. 网络穿透、DNS、域名与安全证书
 
 | 领域 | 推荐服务 | 免费机制与核心功能 |
 | :--- | :--- | :--- |
@@ -243,7 +277,7 @@ flowchart LR
 
 ---
 
-## 9. 多云终身免费资产生产级组合架构拓扑
+## 10. 多云终身免费资产生产级组合架构拓扑
 
 将上述零成本组件有机整合，可构建出一套具备高容灾、自动化弹性且月度开销严格为 **$0.00** 的生产级混合云平台：
 
@@ -255,14 +289,19 @@ flowchart TD
         TS["Tailscale Mesh VPN (私有内网 100.x.x.x)"]
     end
     
-    subgraph ComputeCluster["2. 核心计算与调度"]
+    subgraph BuildAndRegistry["2. 容器镜像构建与分发"]
+        ACR["阿里云 ACR (无限存储 · 云端自动多架构构建)"]
+        GHCR["GitHub ghcr.io (公开镜像仓库)"]
+    end
+    
+    subgraph ComputeCluster["3. 核心计算与调度"]
         OCI_Host["OCI 4C24G 实例 (K3s 业务主节点)"]
         Tencent_Host["腾讯云 4C4G 实例 (K3s / Kong 网关)"]
         GCP_Host["GCP e2-micro 实例 (美区跳板/探针)"]
         ACA_Run["Azure Container Apps / Cloud Run / IBM Code Engine (无状态微服务)"]
     end
     
-    subgraph DataStorage["3. 数据持久化与分析"]
+    subgraph DataStorage["4. 数据持久化与分析"]
         OCI_MySQL[("OCI MySQL HeatWave (50GB)")]
         AWS_DDB[("AWS DynamoDB (25GB/日志审计)")]
         IBM_Cloudant[("IBM Cloudant (1GB JSON 文档)")]
@@ -271,12 +310,13 @@ flowchart TD
         IBM_COS[("IBM COS (25GB S3 兼容存储)")]
     end
     
-    subgraph StreamingOps["4. 管道与 AI 认知"]
+    subgraph StreamingOps["5. 管道与 AI 认知"]
         GCP_PS["GCP Cloud Pub/Sub (10GB 消息吞吐)"]
         Gemini_AI["Google AI Studio (Gemini 3.7 Flash)"]
         Watson_AI["IBM Watson (500分钟语音转文字)"]
     end
     
+    ACR -->|"内网/公网极速拉取"| OCI_Host & Tencent_Host
     CF_Tunnel --> Tencent_Host
     TS <--> OCI_Host & Tencent_Host & GCP_Host
     
@@ -289,15 +329,16 @@ flowchart TD
     Tencent_Host --> CF_R2 & IBM_COS
 ```
 
-### 9.1 架构运行规范
-1. **控制面与高算力任务**：放置在 **OCI 4C24G 免费 ARM 实例**，支撑 Docker/K3s 容器化微服务。
-2. **边缘网关与流量分发**：利用 **Cloudflare Tunnel + 腾讯云节点**，对外提供高防 HTTPS 接口，对内通过 **Tailscale** 实现数据库私网穿透。
-3. **日志与审计流**：K3s 节点通过 Fluent Bit 将日志打入 **GCP Pub/Sub（10GB 免费）**，经由原生订阅直接入库 **BigQuery 沙盒（每月 1TB 免费查询）**，实现免运维大数据分析。
-4. **状态与存储**：高并发写入走 **AWS DynamoDB（25 RCU/WCU 终身免费）** 与 **IBM Cloudant**，关系型业务数据沉淀至 **OCI MySQL HeatWave（50GB 免费）**，静态资产托管于 **Cloudflare R2（零出站流量费）** 与 **IBM COS（25GB 免费空间）**。
+### 10.1 架构运行规范
+1. **镜像分发与构建**：利用 **阿里云 ACR 个人版** 托管私有镜像并进行云端免费多架构编译，配合 **ghcr.io** 分发开源公共镜像。
+2. **控制面与高算力任务**：放置在 **OCI 4C24G 免费 ARM 实例**，支撑 Docker/K3s 容器化微服务。
+3. **边缘网关与流量分发**：利用 **Cloudflare Tunnel + 腾讯云节点**，对外提供高防 HTTPS 接口，对内通过 **Tailscale** 实现数据库私网穿透。
+4. **日志与审计流**：K3s 节点通过 Fluent Bit 将日志打入 **GCP Pub/Sub（10GB 免费）**，经由原生订阅直接入库 **BigQuery 沙盒（每月 1TB 免费查询）**，实现免运维大数据分析。
+5. **状态与存储**：高并发写入走 **AWS DynamoDB（25 RCU/WCU 终身免费）** 与 **IBM Cloudant**，关系型业务数据沉淀至 **OCI MySQL HeatWave（50GB 免费）**，静态资产托管于 **Cloudflare R2（零出站流量费）** 与 **IBM COS（25GB 免费空间）**。
 
 ---
 
-## 10. 总结与最佳运维实践
+## 11. 总结与最佳运维实践
 
 免费云资源并非玩具，只要边界清晰、策略严密，完全能够支撑起极具工业质感的现代化基础设施：
 
