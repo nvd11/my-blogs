@@ -49,7 +49,7 @@ flowchart TD
         FluentBit -.->|Tailscale 专网推流| VLogs["VictoriaLogs (星光板 RISC-V)"]
     end
 
-    EphemeralPod -.->|跑完退出 (Completed)| MemoryFree["100% 释放内存物归原主"]
+    EphemeralPod -.->|"跑完退出 (Completed)"| MemoryFree["100% 释放内存物归原主"]
 ```
 
 整个链路环环相扣：
