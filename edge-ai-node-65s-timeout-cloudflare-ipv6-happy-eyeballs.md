@@ -10,7 +10,7 @@
 
 两台机器的测试结果差异巨大：
 * **海外云端节点（GCP 云主机直连）**：端到端总耗时仅 **~5 秒**。
-* **国内家庭边缘节点（Radxa）**：端到端总耗时达到了 **146 秒（接近 2 分半钟）**，足足比云端慢了近 **1 分半钟**！
+* **私有局域网边缘节点（Radxa）**：端到端总耗时达到了 **146 秒（接近 2 分半钟）**，足足比云端慢了近 **1 分半钟**！
 
 从边缘节点的应用执行日志中，我们观察到两段关键的耗时记录：
 
@@ -116,13 +116,13 @@ print([a[4][0] for a in addrs])
 
 * **Python 的网络库（标准库 `socket`、`requests`、`httpx`）**：
   **默认均未实现 Happy Eyeballs！**
-  Python 会严格遵守操作系统 `getaddrinfo` 返回的地址列表，按照顺序进行**同步串行重试**。因为当前国内家庭宽带已经普遍分配了公网 IPv6，按照系统的 RFC 6724 规则，**IPv6 地址排在最前面**。Python 必须死等第一个 IPv6 彻底连接超时失败后，才会去尝试下一个 IP。
+  Python 会严格遵守操作系统 `getaddrinfo` 返回的地址列表，按照顺序进行**同步串行重试**。因为当前外部接入网络普遍分配了公网 IPv6，按照系统的 RFC 6724 规则，**IPv6 地址排在最前面**。Python 必须死等第一个 IPv6 彻底连接超时失败后，才会去尝试下一个 IP。
 
-### 2. 国内运营商与 Cloudflare IPv6 的“黑洞”
+### 2. 跨网边界与 Cloudflare IPv6 的“黑洞”
 
 为什么连接 Cloudflare 的 IPv6 会超时？
 
-国内三大运营商对 Cloudflare 的边缘 Anycast IPv6 存在严重的跨网路由阻断与黑洞现象。数据包离开本地网关后，在骨干网出口被静默丢弃（Silent Drop），**既不返回 SYN-ACK，也不发送 ICMP Destination Unreachable 或 TCP RST**。
+跨网络边界访问 Cloudflare 的边缘 Anycast IPv6 存在严重的跨网路由阻断与黑洞现象。数据包离开本地网关后，在跨域骨干出口被静默丢弃（Silent Drop），**既不返回 SYN-ACK，也不发送 ICMP Destination Unreachable 或 TCP RST**。
 
 对于发起连接的客户端操作系统内核而言，它根本不知道数据包已被丢弃，只能按照 TCP 规范不断重发 SYN 握手包。
 
@@ -204,7 +204,7 @@ sequenceDiagram
     Note over App,CF_v6: 【修复前：IPv6 黑洞导致 65 秒卡顿】
     App->>Kernel: connect(2606:4700::443)
     Kernel->>CF_v6: TCP SYN [1] (t=0s)
-    Note over CF_v6: 国内骨干网静默丢弃 (Black Hole)
+    Note over CF_v6: 跨网骨干路由静默丢弃 (Black Hole)
     Kernel->>CF_v6: TCP SYN [2] (t=1s)
     Kernel->>CF_v6: TCP SYN [3] (t=3s)
     Kernel->>CF_v6: TCP SYN [4] (t=7s)
@@ -316,5 +316,5 @@ Vanilla Python Stream: TTFT=2.94s, Total=2.95s, Chunks=3
    * `~63s - 65s`：通常对应 Linux `tcp_syn_retries = 6` 的退避重传和超时。
    * `~60s`：通常对应 Nginx/Envoy 的 `proxy_read_timeout` 或 HTTP client 缺省超时。
    * `~75s`：通常对应某些 BSD/Windows 协议栈的 TCP 建连超时。
-3. **国内边缘场景警惕 Cloudflare 免费版默认开启的 IPv6**：
-   国内访问 Cloudflare 节点网络本就复杂，免费版默认开启 IPv6 会让大量支持双栈的内网设备优先踩入路由黑洞。如果系统不具备 Happy Eyeballs 能力，在域名接入层关闭 IPv6 是最干净彻底的解法。
+3. **混合多云边缘场景警惕 Cloudflare 免费版默认开启的 IPv6**：
+   跨网访问 Cloudflare 节点网络本就复杂，免费版默认开启 IPv6 会让大量支持双栈的私网设备优先踩入路由黑洞。如果系统不具备 Happy Eyeballs 能力，在域名接入层关闭 IPv6 是最干净彻底的解法。
