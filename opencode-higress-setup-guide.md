@@ -15,11 +15,21 @@
 
 ---
 
-## 二、一键导入 Higress 模型配置
+## 二、一键导入 Higress 模型配置（无需新建脚本文件，直接粘贴运行）
 
-将下方脚本中的 `<YOUR_HIGRESS_API_KEY>` 替换为你的专属 API Key，复制到终端运行即可自动导入全部模型。
+**不需要新建任何脚本文件**，只需打开系统自带的命令行窗口，把下方整段命令直接粘贴进去按回车即可。
 
-### 1. Windows（打开 PowerShell 运行）
+### 1. Windows 电脑逐步操作：
+
+1. **第 1 步（打开 PowerShell 窗口）**：
+   - 按下键盘上的 **`Win + R`** 键（或在桌面左下角“开始”按钮上点鼠标右键）；
+   - 输入 **`powershell`** 并按回车，会弹出一个蓝底（或黑底）的命令行窗口。
+2. **第 2 步（先在记事本里替换好 Key）**：
+   - 点击下方代码框右上角的 **复制按钮**，先粘贴到记事本（或微信输入框）里；
+   - 把第一行的 `<YOUR_HIGRESS_API_KEY>` 替换成发给你的 `sk-...` 密钥（注意保留两边的双引号）。
+3. **第 3 步（粘贴到 PowerShell 回车）**：
+   - 全选复制改好的整段内容，在刚才打开的 **PowerShell 窗口里点一下鼠标右键**（或按 `Ctrl + V`）粘贴进去；
+   - 最后按一下 **回车 (Enter)**，看到绿色的 `✅ Higress 配置已导入` 就大功告成了！
 
 ```powershell
 $HIGRESS_KEY = "<YOUR_HIGRESS_API_KEY>"
@@ -81,7 +91,10 @@ mkdir -Force "$HOME\.config\opencode", "$HOME\.local\share\opencode" | Out-Null
 Write-Host "✅ Higress 配置已导入，请重启 OpenCode 桌面版。" -ForegroundColor Green
 ```
 
-### 2. macOS / Linux（打开 Terminal 运行）
+### 2. macOS / Linux 电脑逐步操作：
+
+1. 按 `Command + 空格`搜索 **`Terminal` (终端)** 并打开；
+2. 将下方第一行的 `<YOUR_HIGRESS_API_KEY>` 替换为你的 `sk-...` 密钥，整段粘贴到终端按回车即可：
 
 ```bash
 export HIGRESS_KEY="<YOUR_HIGRESS_API_KEY>"
